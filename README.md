@@ -1,20 +1,38 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Burn to Redeem Reward Claims
 
-# Run and deploy your AI Studio app
+This app uses a two-signature flow:
 
-This contains everything you need to run your app locally.
+1. Wallet signs a token-gate message (`/api/auth-gate`).
+2. Wallet signs a claim message (`/api/claim-reward`).
+3. Backend verifies both signatures and token-gate ownership, then transfers a random ERC-1155 token from treasury wallet to claimant.
 
-View your app in AI Studio: https://ai.studio/apps/31109236-47cb-43e7-8fb7-3cd713bc609c
+## Environment variables
 
-## Run Locally
+Copy from `.env.example` and set real values in Vercel Project Settings.
 
-**Prerequisites:**  Node.js
+Required:
 
+- `TOKEN_GATE_CONTRACT`
+- `TOKEN_GATE_STANDARD` (`erc721` or `erc1155`)
+- `TOKEN_GATE_TOKEN_ID` (single `erc1155` gate token ID) or `TOKEN_GATE_TOKEN_IDS` (comma-separated IDs)
+- `CLAIM_SIGNING_SECRET`
+- `TREASURY_PRIVATE_KEY`
+- `REWARD_ERC1155_CONTRACT`
+- `REWARD_ERC1155_TOKEN_IDS`
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Security notes
+
+- Keep `TREASURY_PRIVATE_KEY` server-side only.
+- Use a dedicated treasury wallet with limited funds.
+- For high-value rewards, move to contract-based allowlists/nonces and persistent claim tracking.
+
+## Local development
+
+```bash
+npm install
+npm run dev
+```
+
+## Deploy
+
+Deploy to Vercel and set env vars in the project dashboard.
