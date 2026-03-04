@@ -9,12 +9,3 @@ export interface NFT {
   tokenId?: string;
   contractAddress?: string;
 }
-
-export interface Reward {
-  id: string;
-  name: string;
-  description: string;
-  image: string;
-  cost: number;
-  stock: number;
-}

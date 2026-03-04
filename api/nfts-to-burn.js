@@ -10,6 +10,44 @@ function normalizeAddress(value, fieldName) {
   }
 }
 
+function parseAddressList(value) {
+  const items = String(value || '')
+    .split(/[\n,\s]+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  const out = [];
+  const seen = new Set();
+  for (const item of items) {
+    const normalized = normalizeAddress(item, 'allowed collection contract');
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function aggregateNfts(items) {
+  const byKey = new Map();
+  for (const item of items) {
+    const key = `${String(item.contractAddress || '').toLowerCase()}:${String(item.tokenId || '')}`;
+    if (!key || key.endsWith(':')) continue;
+
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, { ...item });
+      continue;
+    }
+
+    const existingQty = BigInt(String(existing.quantity || '1'));
+    const incomingQty = BigInt(String(item.quantity || '1'));
+    existing.quantity = (existingQty + incomingQty).toString();
+  }
+
+  return Array.from(byKey.values());
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
     res.setHeader('Allow', 'GET');
@@ -23,9 +61,13 @@ export default async function handler(req, res) {
     const url = new URL(req.url || '/api/nfts-to-burn', `${protocol}://${host}`);
 
     const address = normalizeAddress(url.searchParams.get('address'), 'wallet address');
+    const allCollectionsMode = String(url.searchParams.get('all') || '').trim() === '1';
     const collectionSlug = String(url.searchParams.get('collection') || process.env.BURN_COLLECTION_SLUG || 'cc0-by-pierre').trim();
     const configuredRewardContract =
       String(runtime.rewardErc1155Contract || process.env.REWARD_ERC1155_CONTRACT || '').trim();
+    const allowedContracts = parseAddressList(
+      runtime.burnAllowedCollections || process.env.BURN_ALLOWED_COLLECTIONS || ''
+    );
     const hasCollection = Boolean(collectionSlug);
     const contractParam = String(
       url.searchParams.get('contract') || (hasCollection ? '' : configuredRewardContract)
@@ -40,6 +82,35 @@ export default async function handler(req, res) {
     }
 
     const maxItems = Number.isInteger(max) && max > 0 ? Math.min(max, 20000) : 80;
+    if (allCollectionsMode && allowedContracts.length > 0) {
+      const results = await Promise.all(
+        allowedContracts.map((allowedContractAddress) =>
+          fetchOpenSeaWalletContractNfts({
+            walletAddress: address,
+            contractAddress: allowedContractAddress,
+            chainId: runtime.chainId,
+            apiKey,
+            mcpToken,
+            perPage: 80,
+            maxItems,
+            timeoutMs: 12000
+          })
+        )
+      );
+
+      const merged = aggregateNfts(results.flatMap((result) => result.nfts || []));
+      return res.status(200).json({
+        ok: true,
+        chain: results[0]?.chain || 'base',
+        walletAddress: address,
+        contractAddress: '',
+        collection: '',
+        strategy: 'allowed-contracts',
+        total: merged.length,
+        nfts: merged
+      });
+    }
+
     const result = hasCollection
       ? await fetchOpenSeaWalletCollectionNfts({
           walletAddress: address,

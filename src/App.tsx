@@ -1,8 +1,31 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowRight, Check, Flame, Info, LockKeyhole, Shield, Wallet, X, Zap } from 'lucide-react';
+import {
+  ArrowRight,
+  Check,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Crown,
+  ExternalLink,
+  Flame,
+  Info,
+  Layers,
+  LockKeyhole,
+  Medal,
+  Plus,
+  RefreshCw,
+  Sparkles,
+  Shield,
+  ShieldCheck,
+  Target,
+  Trophy,
+  Wallet,
+  X,
+  Zap
+} from 'lucide-react';
 import { ethers } from 'ethers';
-import { NFT, Reward } from './types';
+import { NFT } from './types';
 
 type ClaimAllocation = {
   tokenId: string;
@@ -37,6 +60,7 @@ type BurnInventoryNft = {
 type BurnInventoryResponse = {
   ok: boolean;
   total?: number;
+  strategy?: string;
   nfts?: BurnInventoryNft[];
   error?: string;
 };
@@ -53,6 +77,84 @@ type BurnRewardResponse = {
   creditsAwarded?: number;
   wins?: BurnRewardWin[];
   error?: string;
+};
+
+type RewardCidGalleryItem = {
+  index: number;
+  label: string;
+  cid: string;
+  name?: string;
+  description?: string;
+  tokenUri: string;
+  metadataUrl?: string;
+  imageUrl: string;
+};
+
+type RewardCidGalleryResponse = {
+  ok: boolean;
+  total?: number;
+  rewardMintEnabled?: boolean;
+  rewardMutableNftContract?: string;
+  items?: RewardCidGalleryItem[];
+  error?: string;
+};
+
+type RewardCidMintResponse = {
+  ok: boolean;
+  cid?: string;
+  tokenUri?: string;
+  imageUrl?: string;
+  tokenId?: string | null;
+  mintTxHash?: string;
+  rewardMutableNftContract?: string;
+  error?: string;
+};
+
+type RedeemedRewardNft = {
+  tokenId: string;
+  name: string;
+  description: string;
+  tokenUri: string;
+  metadataUrl: string;
+  imageUrl: string;
+  txHash: string;
+  basescanUrl: string;
+};
+
+type RedeemedRewardsResponse = {
+  ok: boolean;
+  contractAddress?: string;
+  total?: number;
+  nfts?: RedeemedRewardNft[];
+  error?: string;
+};
+
+type MonochromeNft = {
+  id: string;
+  name: string;
+  description: string;
+  image: string;
+  rarity: 'Common' | 'Rare' | 'Legendary';
+};
+
+type MonochromeRedemption = {
+  id: string;
+  name: string;
+  description: string;
+  image: string;
+  requiredBurnId: string;
+};
+
+type DestinyImage = {
+  id: string;
+  url: string;
+  name: string;
+};
+
+type DestinyFortune = {
+  title: string;
+  description: string;
+  attire: string;
 };
 
 type WebsiteCopy = {
@@ -84,8 +186,10 @@ type BurnWebsiteProps = {
   entryMode: 'claim' | 'gate-only';
   isClaimSigning: boolean;
   claimError: string;
-  onClaimRewards: () => Promise<void>;
+  onClaimRewards: () => Promise<ClaimResponse>;
 };
+
+type RedeemedLimitOption = 6 | 12 | 24 | 40 | 80;
 
 declare global {
   interface Window {
@@ -100,39 +204,15 @@ declare global {
 const TARGET_CHAIN_ID = Number(import.meta.env.VITE_BASE_CHAIN_ID || 8453);
 const REWARD_CONTRACT = String(import.meta.env.VITE_REWARD_ERC1155_CONTRACT || '');
 const BURN_COLLECTION_SLUG = String(import.meta.env.VITE_BURN_COLLECTION_SLUG || 'cc0-by-pierre').trim();
+const REWARD_PREVIEW_WALLET = '0x0672700f90ce2aa72c68268219385e7e0c4a6418';
 const BURN_CREDITS_PER_NFT = 20;
 const BURN_TO_ADDRESS = '0x000000000000000000000000000000000000dEaD';
+const REWARD_SPIN_CARD_WIDTH = 172;
+const DESTINY_REEL_ITEM_HEIGHT = 206;
 const ERC1155_BURN_TRANSFER_ABI = [
   'function safeTransferFrom(address from, address to, uint256 id, uint256 value, bytes data)'
 ];
 const GATE_SESSION_STORAGE_KEY = 'burn_to_redeem_gate_session_v1';
-
-const MOCK_REWARDS: Reward[] = [
-  {
-    id: 'r1',
-    name: 'PHYSICAL_PRINT_V1',
-    description: 'High-quality metallic print of your burned asset.',
-    image: 'https://picsum.photos/seed/print1/400/400',
-    cost: 1000,
-    stock: 50
-  },
-  {
-    id: 'r2',
-    name: 'GENESIS_PASS',
-    description: 'Access to future exclusive drops and events.',
-    image: 'https://picsum.photos/seed/pass1/400/400',
-    cost: 2500,
-    stock: 10
-  },
-  {
-    id: 'r3',
-    name: 'CUSTOM_AVATAR',
-    description: 'A 1/1 custom avatar designed by our studio.',
-    image: 'https://picsum.photos/seed/avatar1/400/400',
-    cost: 5000,
-    stock: 5
-  }
-];
 
 const DEFAULT_WEBSITE_COPY: WebsiteCopy = {
   brandName: 'Burn to Redeem',
@@ -143,15 +223,133 @@ const DEFAULT_WEBSITE_COPY: WebsiteCopy = {
   step1Subtitle: 'Connect on Base and sign to prove ownership of the gate NFT.',
   step2Title: 'Step 2: Claim Rewards In Redeemable Rewards Tab',
   step2Subtitle: 'After entry, open Redeemable Rewards and sign to claim your random NFT allocation.',
-  burnHeroSubtitle: 'Burn your claimed rewards to stack credits and redeem premium drops.',
+  burnHeroSubtitle: 'Burn your claimed rewards to stack game credits and redeem new digital art.',
   nftsTabLabel: 'NFTS TO BURN',
   rewardsTabLabel: 'REDEEMABLE REWARDS',
   nftsSectionTitle: 'NFTS TO BURN',
   rewardsSectionTitle: 'Redeemable Rewards'
 };
 
+const B2R_FLOW = [
+  {
+    title: 'Acquire',
+    description: 'Hold collectible NFTs in your wallet and select what you are ready to sacrifice.'
+  },
+  {
+    title: 'Burn',
+    description: 'Send NFTs to the burn address to remove supply and convert each burn into game credits.'
+  },
+  {
+    title: 'Redeem',
+    description: 'Use stacked credits in Redeemable Rewards to unlock new digital art from protocol drops.'
+  }
+];
+
+const BONFIRE_MANIFESTO = [
+  'In a world of infinite digital abundance, scarcity is the only truth.',
+  'Every burn is permanent, on-chain, and measurable by the protocol.',
+  'Participants choose between preserving history or creating future rarity.'
+];
+
+const BONFIRE_ROADMAP = [
+  { phase: 'Phase 1', title: 'Genesis Collection Live', status: 'Live' },
+  { phase: 'Phase 2', title: 'Bonfire Ritual Activation', status: 'Active' },
+  { phase: 'Phase 3', title: 'Echo Drop Reveal', status: 'Upcoming' },
+  { phase: 'Phase 4', title: 'Protocol Expansion', status: 'Locked' }
+];
+
+const MONOCHROME_MOCK_NFTS: MonochromeNft[] = [
+  {
+    id: '1',
+    name: 'VOID-01',
+    description: 'The first iteration of the void. Pure darkness.',
+    image: 'https://picsum.photos/seed/void1/800/800?grayscale',
+    rarity: 'Common'
+  },
+  {
+    id: '2',
+    name: 'VOID-02',
+    description: 'A fracture in the silence. Something stirs.',
+    image: 'https://picsum.photos/seed/void2/800/800?grayscale',
+    rarity: 'Common'
+  },
+  {
+    id: '3',
+    name: 'ECLIPSE-X',
+    description: 'The ultimate convergence of light and shadow.',
+    image: 'https://picsum.photos/seed/eclipse/800/800?grayscale',
+    rarity: 'Rare'
+  },
+  {
+    id: '4',
+    name: 'NULL-POINT',
+    description: 'The center of everything and nothing.',
+    image: 'https://picsum.photos/seed/null/800/800?grayscale',
+    rarity: 'Legendary'
+  }
+];
+
+const MONOCHROME_REDEMPTION_OPTIONS: MonochromeRedemption[] = [
+  {
+    id: 'r1',
+    name: 'THE AWAKENING',
+    description: 'Redeem your VOID NFT for a physical high-contrast print.',
+    image: 'https://picsum.photos/seed/redeem1/800/800?grayscale',
+    requiredBurnId: '1'
+  },
+  {
+    id: 'r2',
+    name: 'SILENT ECHO',
+    description: 'Exchange your VOID-02 for a limited edition vinyl.',
+    image: 'https://picsum.photos/seed/redeem2/800/800?grayscale',
+    requiredBurnId: '2'
+  },
+  {
+    id: 'r3',
+    name: 'SOLARIS',
+    description: 'The Rare Eclipse-X transforms into a digital sculpture.',
+    image: 'https://picsum.photos/seed/redeem3/800/800?grayscale',
+    requiredBurnId: '3'
+  }
+];
+
+const DESTINY_DEFAULT_IMAGES: DestinyImage[] = [
+  { id: 'd1', url: 'https://picsum.photos/seed/heaven/600/600', name: 'Celestial Gate' },
+  { id: 'd2', url: 'https://picsum.photos/seed/hell/600/600', name: 'Inferno Core' },
+  { id: 'd3', url: 'https://picsum.photos/seed/nature/600/600', name: 'Ancient Grove' },
+  { id: 'd4', url: 'https://picsum.photos/seed/cyber/600/600', name: 'Neon Abyss' },
+  { id: 'd5', url: 'https://picsum.photos/seed/space/600/600', name: 'Void Traveler' },
+  { id: 'd6', url: 'https://picsum.photos/seed/ocean/600/600', name: 'Deep Tide' },
+  { id: 'd7', url: 'https://picsum.photos/seed/desert/600/600', name: 'Solstice Sands' },
+  { id: 'd8', url: 'https://picsum.photos/seed/mountain/600/600', name: 'Zenith Peak' }
+];
+
+const CLAIM_RITUAL_STEPS = [
+  { label: 'Portal Warmup', hint: 'Syncing claim ritual effects' },
+  { label: 'Wallet Signature', hint: 'Confirm the signature in wallet' },
+  { label: 'Gate Verification', hint: 'Validating your gated access token' },
+  { label: 'Reward Distribution', hint: 'Dispatching your reward allocation' }
+] as const;
+
+const CLAIM_PARTICLES = [
+  { left: '8%', top: '16%', delay: 0 },
+  { left: '26%', top: '12%', delay: 0.25 },
+  { left: '44%', top: '22%', delay: 0.4 },
+  { left: '62%', top: '11%', delay: 0.55 },
+  { left: '81%', top: '18%', delay: 0.75 },
+  { left: '16%', top: '76%', delay: 0.15 },
+  { left: '38%', top: '83%', delay: 0.35 },
+  { left: '72%', top: '78%', delay: 0.65 }
+] as const;
+
 function shortAddress(value: string) {
   return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
+function wait(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
 }
 
 function buildGateMessage(address: string, chainId: number, issuedAt: number) {
@@ -171,6 +369,54 @@ function buildClaimMessage(address: string, chainId: number, issuedAt: number, g
     `Issued At: ${issuedAt}`,
     `Gate Pass: ${gatePass}`
   ].join('\n');
+}
+
+function buildCidMintMessage(address: string, chainId: number, issuedAt: number, gatePass: string, cid: string) {
+  return [
+    'Burn to Redeem CID Mint',
+    `Address: ${address.toLowerCase()}`,
+    `Chain ID: ${chainId}`,
+    `Issued At: ${issuedAt}`,
+    `Gate Pass: ${gatePass}`,
+    `CID: ${cid}`
+  ].join('\n');
+}
+
+function normalizeDestinyImageName(value: string) {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return 'Unknown Artifact';
+  const withoutExtension = trimmed.replace(/\.[a-z0-9]+$/i, '');
+  return withoutExtension || trimmed;
+}
+
+function generateDestinyFortune(name: string): DestinyFortune {
+  const archetypes = [
+    'Architect of Ruin',
+    'Oracle of Static',
+    'Keeper of Ember',
+    'Harbinger of Light',
+    'Warden of Echoes'
+  ];
+  const prophecyLines = [
+    'Your path bends scarcity into legend. What you burn will return as myth.',
+    'The reel has chosen momentum over mercy. Your next play expands the protocol.',
+    'Signals converge around your wallet. Rare outcomes now favor decisive burns.',
+    'The vault opens where discipline meets chaos. Hold focus and the drop appears.',
+    'Old supply dissolves, new artifacts emerge. You are now in the ascension lane.'
+  ];
+  const attireLines = [
+    'Obsidian cloak with neon-gold trim and mirrored visor.',
+    'Monochrome armor with ash-silver crest and static halo.',
+    'Void-tailored coat with sigil stitching and chrome gauntlets.',
+    'Ceremonial tactical weave with carbon mask and bright edge piping.',
+    'Dust-black mantle with fractured prism accents and runic cuffs.'
+  ];
+
+  const title = `${archetypes[Math.floor(Math.random() * archetypes.length)]}: ${name}`;
+  const description = prophecyLines[Math.floor(Math.random() * prophecyLines.length)];
+  const attire = attireLines[Math.floor(Math.random() * attireLines.length)];
+
+  return { title, description, attire };
 }
 
 type StoredGateSession = {
@@ -265,6 +511,31 @@ function mapBurnInventoryToNfts(items: BurnInventoryNft[]): NFT[] {
   return Array.from(byKey.values());
 }
 
+type SiteFooterProps = {
+  className?: string;
+};
+
+function SiteFooter({ className = '' }: SiteFooterProps) {
+  return (
+    <footer className={`relative z-10 border-t border-white/10 bg-black/60 ${className}`.trim()}>
+      <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-4 px-6 py-6 text-sm">
+        <div className="font-mono text-white/70">© 2026 Burn to Redeem Protocol by Pierre ⌐◨-◨</div>
+        <div className="flex items-center gap-4 font-mono text-white/70">
+          <a href="https://x.com" target="_blank" rel="noreferrer" className="hover:text-white">
+            Twitter
+          </a>
+          <a href="https://discord.com" target="_blank" rel="noreferrer" className="hover:text-white">
+            Discord
+          </a>
+          <a href="https://etherscan.io" target="_blank" rel="noreferrer" className="hover:text-white">
+            Etherscan
+          </a>
+        </div>
+      </div>
+    </footer>
+  );
+}
+
 function BurnWebsite({
   walletAddress,
   gatePass,
@@ -275,6 +546,13 @@ function BurnWebsite({
   claimError,
   onClaimRewards
 }: BurnWebsiteProps) {
+  const [isClaimPopupOpen, setIsClaimPopupOpen] = useState(false);
+  const [claimPopupState, setClaimPopupState] = useState<'prep' | 'wallet' | 'processing' | 'success' | 'error'>('prep');
+  const [claimPopupProgress, setClaimPopupProgress] = useState(0);
+  const [claimPopupStep, setClaimPopupStep] = useState(0);
+  const [claimPopupError, setClaimPopupError] = useState('');
+  const [claimPopupTxHash, setClaimPopupTxHash] = useState('');
+  const claimProgressTimerRef = useRef<number | null>(null);
   const [userNfts, setUserNfts] = useState<NFT[]>([]);
   const [balance, setBalance] = useState(0);
   const [selectedNft, setSelectedNft] = useState<NFT | null>(null);
@@ -282,11 +560,133 @@ function BurnWebsite({
   const [burnError, setBurnError] = useState('');
   const [burnDrops, setBurnDrops] = useState<BurnRewardWin[]>([]);
   const [burnedId, setBurnedId] = useState<string | null>(null);
-  const [redeemSuccess, setRedeemSuccess] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'nfts' | 'rewards'>('nfts');
+  const [redeemedRewards, setRedeemedRewards] = useState<RedeemedRewardNft[]>([]);
+  const [isRedeemedRewardsLoading, setIsRedeemedRewardsLoading] = useState(false);
+  const [redeemedRewardsError, setRedeemedRewardsError] = useState('');
+  const [rewardCollectionAddress, setRewardCollectionAddress] = useState('');
+  const [redeemedRefreshNonce, setRedeemedRefreshNonce] = useState(0);
+  const [redeemedLimit, setRedeemedLimit] = useState<RedeemedLimitOption>(24);
+  const [rewardCidGallery, setRewardCidGallery] = useState<RewardCidGalleryItem[]>([]);
+  const [isRewardCidGalleryLoading, setIsRewardCidGalleryLoading] = useState(false);
+  const [rewardCidGalleryError, setRewardCidGalleryError] = useState('');
+  const [rewardCidMintContract, setRewardCidMintContract] = useState('');
+  const [rewardSpinIndex, setRewardSpinIndex] = useState(0);
+  const [rewardSpinResultIndex, setRewardSpinResultIndex] = useState<number | null>(null);
+  const [isRewardSpinRunning, setIsRewardSpinRunning] = useState(false);
+  const [isRewardCidMinting, setIsRewardCidMinting] = useState(false);
+  const [rewardCidMintError, setRewardCidMintError] = useState('');
+  const [rewardCidMintSuccess, setRewardCidMintSuccess] = useState('');
+  const [rewardCidMintTxHash, setRewardCidMintTxHash] = useState('');
+  const [activeTab, setActiveTab] = useState<'nfts' | 'rewards' | 'b2r' | 'bonfire' | 'monochrome' | 'destiny' | 'leaderboard'>('nfts');
+  const [isB2RCarouselOpen, setIsB2RCarouselOpen] = useState(false);
+  const [isRewardsCarouselOpen, setIsRewardsCarouselOpen] = useState(false);
+  const [rewardPreviewNfts, setRewardPreviewNfts] = useState<NFT[]>([]);
+  const [isRewardPreviewLoading, setIsRewardPreviewLoading] = useState(false);
+  const [rewardPreviewError, setRewardPreviewError] = useState('');
   const [isInventoryLoading, setIsInventoryLoading] = useState(false);
   const [inventoryNote, setInventoryNote] = useState('');
+  const [bonfireSelectedNft, setBonfireSelectedNft] = useState<NFT | null>(null);
+  const [monochromeNfts, setMonochromeNfts] = useState<MonochromeNft[]>(MONOCHROME_MOCK_NFTS);
+  const [monochromeSelectedNft, setMonochromeSelectedNft] = useState<MonochromeNft | null>(null);
+  const [isMonochromeBurning, setIsMonochromeBurning] = useState(false);
+  const [monochromeRedeemedItem, setMonochromeRedeemedItem] = useState<MonochromeRedemption | null>(null);
+  const [showMonochromeSuccess, setShowMonochromeSuccess] = useState(false);
+  const [destinyImages, setDestinyImages] = useState<DestinyImage[]>(DESTINY_DEFAULT_IMAGES);
+  const [destinyGameState, setDestinyGameState] = useState<'idle' | 'spinning' | 'stopping' | 'result'>('idle');
+  const [destinyReelIndex, setDestinyReelIndex] = useState(0);
+  const [destinyTargetIndex, setDestinyTargetIndex] = useState<number | null>(null);
+  const [destinyFortune, setDestinyFortune] = useState<DestinyFortune | null>(null);
+  const [isDestinyFortuneLoading, setIsDestinyFortuneLoading] = useState(false);
+  const [destinySpinCount, setDestinySpinCount] = useState(0);
+  const bonfireScrollRef = useRef<HTMLDivElement | null>(null);
+  const b2rCarouselScrollRef = useRef<HTMLDivElement | null>(null);
+  const rewardsCarouselScrollRef = useRef<HTMLDivElement | null>(null);
+  const destinyUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const rewardSpinAbortRef = useRef(false);
+  const destinySpinAbortRef = useRef(false);
   const totalBurnableUnits = userNfts.reduce((sum, nft) => sum + (nft.quantity || 1), 0);
+  const rewardSpinStrip =
+    rewardCidGallery.length > 0
+      ? Array.from({ length: Math.max(60, rewardCidGallery.length * 24) }, (_, index) => {
+          return rewardCidGallery[index % rewardCidGallery.length];
+        })
+      : [];
+  const selectedRewardCid =
+    rewardCidGallery.length > 0
+      ? rewardCidGallery[((rewardSpinIndex % rewardCidGallery.length) + rewardCidGallery.length) % rewardCidGallery.length]
+      : null;
+  const destinyDisplayImages =
+    destinyImages.length > 0
+      ? Array.from({ length: Math.max(60, destinyImages.length * 20) }, (_, index) => {
+          return destinyImages[index % destinyImages.length];
+        })
+      : [];
+  const selectedDestinyImage =
+    destinyImages.length > 0
+      ? destinyImages[((destinyReelIndex % destinyImages.length) + destinyImages.length) % destinyImages.length]
+      : null;
+  const monochromeBurnedCount = Math.max(0, MONOCHROME_MOCK_NFTS.length - monochromeNfts.length);
+  const mintedRewardCount = redeemedRewards.length + burnDrops.length;
+  const claimCompleted = Boolean(claimResponse?.ok);
+  const progressionScore =
+    balance * 5 +
+    mintedRewardCount * 120 +
+    monochromeBurnedCount * 90 +
+    totalBurnableUnits * 15 +
+    destinySpinCount * 55 +
+    (claimCompleted ? 300 : 0);
+  const progressionLevel = Math.max(1, Math.floor(progressionScore / 500) + 1);
+  const currentLevelStart = (progressionLevel - 1) * 500;
+  const nextLevelTarget = progressionLevel * 500;
+  const levelProgressPct =
+    nextLevelTarget > currentLevelStart
+      ? Math.min(100, Math.round(((progressionScore - currentLevelStart) / (nextLevelTarget - currentLevelStart)) * 100))
+      : 0;
+  const leaderboardRows = [
+    { name: 'You', score: progressionScore, badge: 'Live', accent: true },
+    { name: 'VOIDRIDER', score: 4680, badge: 'Mythic', accent: false },
+    { name: 'ASHFORGE', score: 4275, badge: 'Legendary', accent: false },
+    { name: 'PIXELSMITH', score: 3890, badge: 'Rare', accent: false },
+    { name: 'BURNNODE', score: 3510, badge: 'Common', accent: false }
+  ]
+    .sort((left, right) => right.score - left.score)
+    .map((entry, index) => ({ ...entry, rank: index + 1 }));
+  const userLeaderboardEntry = leaderboardRows.find((entry) => entry.name === 'You');
+  const missionRows = [
+    {
+      title: 'Burn Loop',
+      value: mintedRewardCount,
+      target: 20
+    },
+    {
+      title: 'Credits Stack',
+      value: balance,
+      target: 400
+    },
+    {
+      title: 'Monochrome Ritual',
+      value: monochromeBurnedCount,
+      target: MONOCHROME_MOCK_NFTS.length
+    },
+    {
+      title: 'Destiny Spins',
+      value: destinySpinCount,
+      target: 25
+    }
+  ];
+
+  const stopClaimProgressTimer = () => {
+    if (claimProgressTimerRef.current !== null) {
+      window.clearInterval(claimProgressTimerRef.current);
+      claimProgressTimerRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      stopClaimProgressTimer();
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -307,6 +707,7 @@ function BurnWebsite({
         const query = new URLSearchParams();
         query.set('address', walletAddress);
         query.set('max', '2000');
+        query.set('all', '1');
         if (BURN_COLLECTION_SLUG) {
           query.set('collection', BURN_COLLECTION_SLUG);
         } else if (claimResponse?.rewardContract || REWARD_CONTRACT) {
@@ -323,19 +724,32 @@ function BurnWebsite({
         const fromOpenSea = mapBurnInventoryToNfts(body.nfts || []);
         if (!cancelled) {
           if (fromOpenSea.length > 0) {
-            setUserNfts(fromOpenSea);
-            setInventoryNote(
-              BURN_COLLECTION_SLUG
-                ? `OpenSea synced ${fromOpenSea.length} NFT(s) from ${BURN_COLLECTION_SLUG}.`
-                : `OpenSea synced ${fromOpenSea.length} NFT(s) to burn.`
+            const uniqueCollections = new Set(
+              fromOpenSea.map((entry) => String(entry.collection || '').trim().toLowerCase()).filter(Boolean)
             );
+            setUserNfts(fromOpenSea);
+            if (body.strategy === 'allowed-contracts') {
+              setInventoryNote(
+                `OpenSea synced ${fromOpenSea.length} NFT(s) across ${Math.max(1, uniqueCollections.size)} allowed collection(s).`
+              );
+            } else {
+              setInventoryNote(
+                BURN_COLLECTION_SLUG
+                  ? `OpenSea synced ${fromOpenSea.length} NFT(s) from ${BURN_COLLECTION_SLUG}.`
+                  : `OpenSea synced ${fromOpenSea.length} NFT(s) to burn.`
+              );
+            }
           } else {
             setUserNfts([]);
-            setInventoryNote(
-              BURN_COLLECTION_SLUG
-                ? `No NFTs from ${BURN_COLLECTION_SLUG} found in this wallet.`
-                : 'No burnable NFTs found on OpenSea for this wallet.'
-            );
+            if (body.strategy === 'allowed-contracts') {
+              setInventoryNote('No burnable NFTs found across allowed collections for this wallet.');
+            } else {
+              setInventoryNote(
+                BURN_COLLECTION_SLUG
+                  ? `No NFTs from ${BURN_COLLECTION_SLUG} found in this wallet.`
+                  : 'No burnable NFTs found on OpenSea for this wallet.'
+              );
+            }
           }
         }
       } catch (error) {
@@ -361,16 +775,233 @@ function BurnWebsite({
     }
   }, [activeTab]);
 
-  const handleRedeem = (reward: Reward) => {
-    if (balance < reward.cost) return;
-    setBalance((prev) => prev - reward.cost);
-    setRedeemSuccess(reward.name);
-    setTimeout(() => setRedeemSuccess(null), 4000);
+  useEffect(() => {
+    if (activeTab !== 'monochrome') {
+      setMonochromeSelectedNft(null);
+      setIsMonochromeBurning(false);
+      setShowMonochromeSuccess(false);
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'destiny' && destinyGameState === 'spinning') {
+      destinySpinAbortRef.current = true;
+      setDestinyGameState('idle');
+    }
+  }, [activeTab, destinyGameState]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchRedeemedRewards() {
+      if (!walletAddress) {
+        if (!cancelled) {
+          setRedeemedRewards([]);
+          setRedeemedRewardsError('');
+          setRewardCollectionAddress('');
+        }
+        return;
+      }
+
+      setIsRedeemedRewardsLoading(true);
+      setRedeemedRewardsError('');
+      try {
+        const query = new URLSearchParams();
+        query.set('address', walletAddress);
+        query.set('max', String(redeemedLimit));
+
+        const response = await fetch(`/api/redeemed-nfts?${query.toString()}`);
+        const body = (await response.json().catch(() => ({}))) as RedeemedRewardsResponse;
+        if (!response.ok || !body.ok) {
+          throw new Error(body.error || 'Failed to load redeemed NFTs.');
+        }
+
+        if (!cancelled) {
+          setRedeemedRewards(body.nfts || []);
+          setRewardCollectionAddress(String(body.contractAddress || ''));
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setRedeemedRewards([]);
+          setRedeemedRewardsError(error instanceof Error ? error.message : 'Failed to load redeemed NFTs.');
+        }
+      } finally {
+        if (!cancelled) {
+          setIsRedeemedRewardsLoading(false);
+        }
+      }
+    }
+
+    fetchRedeemedRewards();
+    return () => {
+      cancelled = true;
+    };
+  }, [walletAddress, redeemedRefreshNonce, redeemedLimit]);
+
+  useEffect(() => {
+    return () => {
+      rewardSpinAbortRef.current = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      destinySpinAbortRef.current = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchRewardCidGallery() {
+      if (activeTab !== 'rewards') return;
+
+      setIsRewardCidGalleryLoading(true);
+      setRewardCidGalleryError('');
+
+      try {
+        const response = await fetch('/api/reward-cid-gallery');
+        const body = (await response.json().catch(() => ({}))) as RewardCidGalleryResponse;
+        if (!response.ok || !body.ok) {
+          throw new Error(body.error || 'Failed to load reward CIDs.');
+        }
+
+        if (!cancelled) {
+          const items = Array.isArray(body.items) ? body.items : [];
+          setRewardCidGallery(items);
+          setRewardCidMintContract(String(body.rewardMutableNftContract || ''));
+          if (items.length > 0) {
+            setRewardSpinIndex(items.length * 4);
+          } else {
+            setRewardSpinIndex(0);
+          }
+          setRewardSpinResultIndex(null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setRewardCidGallery([]);
+          setRewardCidMintContract('');
+          setRewardSpinIndex(0);
+          setRewardSpinResultIndex(null);
+          setRewardCidGalleryError(error instanceof Error ? error.message : 'Failed to load reward CIDs.');
+        }
+      } finally {
+        if (!cancelled) setIsRewardCidGalleryLoading(false);
+      }
+    }
+
+    fetchRewardCidGallery();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab]);
+
+  const handleSpinRewardCarousel = async () => {
+    if (isRewardSpinRunning || rewardCidGallery.length === 0) return;
+
+    rewardSpinAbortRef.current = false;
+    setRewardCidMintError('');
+    setRewardCidMintSuccess('');
+    setRewardCidMintTxHash('');
+    setRewardSpinResultIndex(null);
+    setIsRewardSpinRunning(true);
+
+    const gallerySize = rewardCidGallery.length;
+    let cursor = rewardSpinIndex;
+    const currentIndex = ((cursor % gallerySize) + gallerySize) % gallerySize;
+    const targetIndex = Math.floor(Math.random() * gallerySize);
+    const loops = 5 + Math.floor(Math.random() * 4);
+    const steps = loops * gallerySize + ((targetIndex - currentIndex + gallerySize) % gallerySize);
+
+    try {
+      for (let step = 0; step < steps; step += 1) {
+        if (rewardSpinAbortRef.current) return;
+
+        cursor += 1;
+        setRewardSpinIndex(cursor);
+
+        const progress = step / Math.max(1, steps - 1);
+        const delayMs = progress < 0.55 ? 26 : progress < 0.82 ? 50 : progress < 0.94 ? 82 : 126;
+        await wait(delayMs);
+      }
+
+      if (rewardSpinAbortRef.current) return;
+      const anchored = gallerySize * 4 + ((cursor % gallerySize) + gallerySize) % gallerySize;
+      setRewardSpinIndex(anchored);
+      setRewardSpinResultIndex(((anchored % gallerySize) + gallerySize) % gallerySize);
+    } finally {
+      if (!rewardSpinAbortRef.current) {
+        setIsRewardSpinRunning(false);
+      }
+    }
   };
 
-  const handleBurn = async () => {
-    if (!selectedNft) return;
-    if (!selectedNft.contractAddress || !selectedNft.tokenId) {
+  const handleMintSelectedRewardCid = async () => {
+    if (!selectedRewardCid || !gatePass || isRewardSpinRunning || isRewardCidMinting) return;
+    if (!window.ethereum) {
+      setRewardCidMintError('No wallet detected.');
+      return;
+    }
+
+    setRewardCidMintError('');
+    setRewardCidMintSuccess('');
+    setRewardCidMintTxHash('');
+    setIsRewardCidMinting(true);
+
+    try {
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const address = await signer.getAddress();
+      const network = await provider.getNetwork();
+      const currentChainId = Number(network.chainId);
+
+      if (currentChainId !== TARGET_CHAIN_ID) {
+        throw new Error(`Wrong network. Switch to Base (chain ${TARGET_CHAIN_ID}).`);
+      }
+
+      const issuedAt = Date.now();
+      const message = buildCidMintMessage(
+        address,
+        currentChainId,
+        issuedAt,
+        gatePass,
+        selectedRewardCid.cid
+      );
+      const signature = await signer.signMessage(message);
+
+      const response = await fetch('/api/reward-cid-mint', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          address,
+          chainId: currentChainId,
+          issuedAt,
+          gatePass,
+          cid: selectedRewardCid.cid,
+          signature
+        })
+      });
+      const body = (await response.json().catch(() => ({}))) as RewardCidMintResponse;
+      if (!response.ok || !body.ok) {
+        throw new Error(body.error || 'Reward mint failed.');
+      }
+
+      const tokenIdSuffix = body.tokenId ? ` #${body.tokenId}` : '';
+      setRewardCidMintSuccess(`Minted ${selectedRewardCid.label}${tokenIdSuffix}.`);
+      setRewardCidMintTxHash(String(body.mintTxHash || ''));
+      setRedeemedRefreshNonce((value) => value + 1);
+    } catch (error) {
+      setRewardCidMintError(error instanceof Error ? error.message : 'Reward mint failed.');
+    } finally {
+      setIsRewardCidMinting(false);
+    }
+  };
+
+  const handleBurn = async (overrideNft?: NFT) => {
+    const burnTarget = overrideNft || selectedNft;
+    if (!burnTarget) return;
+    if (!burnTarget.contractAddress || !burnTarget.tokenId) {
       setBurnError('Missing contract or token ID for this NFT.');
       return;
     }
@@ -392,14 +1023,14 @@ function BurnWebsite({
       }
 
       const burnContract = new ethers.Contract(
-        selectedNft.contractAddress,
+        burnTarget.contractAddress,
         ERC1155_BURN_TRANSFER_ABI,
         signer
       );
       const tx = await burnContract.safeTransferFrom(
         sender,
         BURN_TO_ADDRESS,
-        BigInt(selectedNft.tokenId),
+        BigInt(burnTarget.tokenId),
         1n,
         '0x'
       );
@@ -408,13 +1039,13 @@ function BurnWebsite({
         throw new Error('Burn transaction failed.');
       }
 
-      setBurnedId(selectedNft.id);
+      setBurnedId(burnTarget.id);
       setBalance((prev) => prev + BURN_CREDITS_PER_NFT);
 
       setUserNfts((prev) => {
         const next = [];
         for (const nft of prev) {
-          if (nft.id !== selectedNft.id) {
+          if (nft.id !== burnTarget.id) {
             next.push(nft);
             continue;
           }
@@ -429,7 +1060,13 @@ function BurnWebsite({
       });
 
       setSelectedNft((prev) => {
-        if (!prev || prev.id !== selectedNft.id) return prev;
+        if (!prev || prev.id !== burnTarget.id) return prev;
+        const currentQuantity = prev.quantity || 1;
+        const updatedQuantity = currentQuantity - 1;
+        return updatedQuantity > 0 ? { ...prev, quantity: updatedQuantity } : null;
+      });
+      setBonfireSelectedNft((prev) => {
+        if (!prev || prev.id !== burnTarget.id) return prev;
         const currentQuantity = prev.quantity || 1;
         const updatedQuantity = currentQuantity - 1;
         return updatedQuantity > 0 ? { ...prev, quantity: updatedQuantity } : null;
@@ -442,7 +1079,7 @@ function BurnWebsite({
           body: JSON.stringify({
             address: sender,
             burnTxHash: tx.hash,
-            contractAddress: selectedNft.contractAddress
+            contractAddress: burnTarget.contractAddress
           })
         });
         const dropBody = (await dropResponse.json().catch(() => ({}))) as BurnRewardResponse;
@@ -452,6 +1089,8 @@ function BurnWebsite({
       } catch {
         // Ignore bonus drop errors; burn + credits are already successful.
       }
+
+      setRedeemedRefreshNonce((value) => value + 1);
     } catch (error) {
       setBurnError(error instanceof Error ? error.message : 'Burn failed.');
     } finally {
@@ -460,29 +1099,218 @@ function BurnWebsite({
     }
   };
 
+  const handleMonochromeBurn = async (nft: MonochromeNft) => {
+    if (isMonochromeBurning) return;
+
+    setIsMonochromeBurning(true);
+    await wait(2500);
+
+    const redemption = MONOCHROME_REDEMPTION_OPTIONS.find((entry) => entry.requiredBurnId === nft.id) || null;
+
+    setMonochromeNfts((prev) => prev.filter((entry) => entry.id !== nft.id));
+    setIsMonochromeBurning(false);
+    setMonochromeSelectedNft(null);
+
+    if (redemption) {
+      setMonochromeRedeemedItem(redemption);
+      setShowMonochromeSuccess(true);
+    }
+  };
+
+  const openDestinyUpload = () => {
+    destinyUploadInputRef.current?.click();
+  };
+
+  const handleDestinyUpload = (event: ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
+
+    const uploaded: DestinyImage[] = Array.from(files).map((file, index) => ({
+      id: `destiny-local-${Date.now()}-${index}`,
+      url: URL.createObjectURL(file),
+      name: normalizeDestinyImageName(file.name)
+    }));
+
+    setDestinyImages(uploaded);
+    setDestinyGameState('idle');
+    setDestinyFortune(null);
+    setDestinyTargetIndex(null);
+    setDestinyReelIndex(uploaded.length * 4);
+
+    event.target.value = '';
+  };
+
+  const handleDestinySpin = async () => {
+    if (destinyGameState === 'spinning' || destinyGameState === 'stopping' || destinyImages.length === 0) return;
+
+    destinySpinAbortRef.current = false;
+    setDestinySpinCount((value) => value + 1);
+    setDestinyFortune(null);
+    setIsDestinyFortuneLoading(false);
+    setDestinyGameState('spinning');
+
+    const imageCount = destinyImages.length;
+    const startIndex = ((destinyReelIndex % imageCount) + imageCount) % imageCount;
+    const winnerIndex = Math.floor(Math.random() * imageCount);
+    setDestinyTargetIndex(winnerIndex);
+
+    const loops = 6 + Math.floor(Math.random() * 4);
+    const totalSteps = loops * imageCount + ((winnerIndex - startIndex + imageCount) % imageCount);
+    let cursor = destinyReelIndex;
+
+    for (let step = 0; step < totalSteps; step += 1) {
+      if (destinySpinAbortRef.current) return;
+
+      cursor += 1;
+      setDestinyReelIndex(cursor);
+
+      const progress = step / Math.max(1, totalSteps - 1);
+      const delayMs = progress < 0.62 ? 24 : progress < 0.84 ? 48 : progress < 0.95 ? 80 : 126;
+      await wait(delayMs);
+    }
+
+    if (destinySpinAbortRef.current) return;
+
+    const anchored = imageCount * 4 + winnerIndex;
+    setDestinyReelIndex(anchored);
+    setDestinyGameState('stopping');
+    await wait(260);
+    if (destinySpinAbortRef.current) return;
+
+    setDestinyGameState('result');
+    setIsDestinyFortuneLoading(true);
+    await wait(700);
+    if (destinySpinAbortRef.current) return;
+
+    const winner = destinyImages[winnerIndex] || selectedDestinyImage;
+    setDestinyFortune(generateDestinyFortune(winner?.name || 'Unknown Artifact'));
+    setIsDestinyFortuneLoading(false);
+  };
+
+  const scrollBonfire = (direction: 'left' | 'right') => {
+    const container = bonfireScrollRef.current;
+    if (!container) return;
+    const step = Math.max(260, Math.floor(container.clientWidth * 0.65));
+    const target = direction === 'left' ? container.scrollLeft - step : container.scrollLeft + step;
+    container.scrollTo({ left: target, behavior: 'smooth' });
+  };
+
+  const scrollB2RCarousel = (direction: 'left' | 'right') => {
+    const container = b2rCarouselScrollRef.current;
+    if (!container) return;
+    const step = Math.max(260, Math.floor(container.clientWidth * 0.7));
+    const delta = direction === 'left' ? -step : step;
+    container.scrollBy({ left: delta, behavior: 'smooth' });
+  };
+
+  const openB2RCarousel = () => {
+    setIsRewardsCarouselOpen(false);
+    setIsB2RCarouselOpen(true);
+    window.setTimeout(() => {
+      const container = b2rCarouselScrollRef.current;
+      if (!container) return;
+      container.scrollTo({ left: container.scrollWidth, behavior: 'instant' as ScrollBehavior });
+    }, 50);
+  };
+
+  const scrollRewardsCarousel = (direction: 'left' | 'right') => {
+    const container = rewardsCarouselScrollRef.current;
+    if (!container) return;
+    const step = Math.max(260, Math.floor(container.clientWidth * 0.7));
+    const delta = direction === 'left' ? -step : step;
+    container.scrollBy({ left: delta, behavior: 'smooth' });
+  };
+
+  const openRewardsCarousel = () => {
+    setIsB2RCarouselOpen(false);
+    setIsRewardsCarouselOpen(true);
+    setIsRewardPreviewLoading(true);
+    setRewardPreviewError('');
+    setRewardPreviewNfts([]);
+
+    fetch(
+      `/api/nfts-to-burn?address=${encodeURIComponent(REWARD_PREVIEW_WALLET)}&max=2000&all=1`
+    )
+      .then(async (response) => {
+        const body = (await response.json().catch(() => ({}))) as BurnInventoryResponse;
+        if (!response.ok || !body.ok) {
+          throw new Error(body.error || 'Failed to load reward wallet holdings.');
+        }
+        setRewardPreviewNfts(mapBurnInventoryToNfts(body.nfts || []));
+      })
+      .catch((error) => {
+        setRewardPreviewError(
+          error instanceof Error ? error.message : 'Failed to load reward wallet holdings.'
+        );
+      })
+      .finally(() => {
+        setIsRewardPreviewLoading(false);
+      });
+
+    window.setTimeout(() => {
+      const container = rewardsCarouselScrollRef.current;
+      if (!container) return;
+      container.scrollTo({ left: container.scrollWidth, behavior: 'auto' });
+    }, 50);
+  };
+
+  const handleClaimRewardsInteractive = async () => {
+    if (!gatePass || isClaimSigning || Boolean(claimResponse?.ok)) return;
+
+    stopClaimProgressTimer();
+    setClaimPopupError('');
+    setClaimPopupTxHash('');
+    setClaimPopupStep(0);
+    setClaimPopupProgress(6);
+    setClaimPopupState('prep');
+    setIsClaimPopupOpen(true);
+
+    await wait(220);
+    setClaimPopupProgress(18);
+    setClaimPopupState('wallet');
+    setClaimPopupStep(1);
+
+    await wait(280);
+    setClaimPopupState('processing');
+    setClaimPopupProgress(30);
+    setClaimPopupStep(2);
+
+    claimProgressTimerRef.current = window.setInterval(() => {
+      setClaimPopupProgress((value) => {
+        if (value >= 92) return value;
+        const next = Math.min(92, value + 2 + Math.floor(Math.random() * 7));
+        if (next >= 76) {
+          setClaimPopupStep(3);
+        } else if (next >= 48) {
+          setClaimPopupStep(2);
+        }
+        return next;
+      });
+    }, 220);
+
+    try {
+      const result = await onClaimRewards();
+      stopClaimProgressTimer();
+      setClaimPopupStep(CLAIM_RITUAL_STEPS.length - 1);
+      setClaimPopupProgress(100);
+      setClaimPopupState('success');
+      setClaimPopupTxHash(String(result.txHash || ''));
+    } catch (error) {
+      stopClaimProgressTimer();
+      setClaimPopupState('error');
+      setClaimPopupProgress((value) => Math.max(value, 48));
+      setClaimPopupError(error instanceof Error ? error.message : 'Claim failed.');
+    }
+  };
+
+  const closeClaimPopup = () => {
+    if (isClaimSigning && claimPopupState !== 'error') return;
+    stopClaimProgressTimer();
+    setIsClaimPopupOpen(false);
+  };
+
   return (
     <div className="min-h-screen font-sans selection:bg-white selection:text-black relative overflow-hidden">
-      <AnimatePresence>
-        {redeemSuccess && (
-          <motion.div
-            initial={{ y: -100, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: -100, opacity: 0 }}
-            className="fixed top-24 left-1/2 -translate-x-1/2 z-[100] w-full max-w-md px-6"
-          >
-            <div className="bg-white text-black p-4 rounded-xl shadow-2xl flex items-center gap-4 border border-black/10">
-              <div className="w-10 h-10 bg-black text-white flex items-center justify-center rounded-lg">
-                <Check className="w-6 h-6" />
-              </div>
-              <div>
-                <div className="font-display font-bold uppercase text-sm">Redemption Successful</div>
-                <div className="text-xs font-mono opacity-60">ITEM: {redeemSuccess}</div>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       <div className="fixed inset-0 pointer-events-none">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(255,255,255,0.05)_0%,transparent_70%)]" />
         <div className="scanline" />
@@ -509,13 +1337,70 @@ function BurnWebsite({
         </div>
       </nav>
 
-      <main className="pt-32 pb-20 px-6 max-w-7xl mx-auto relative z-10">
-        <section className="mb-12">
-          <div className="glass-panel rounded-2xl p-5 text-sm">
+      <main className="pt-28 md:pt-32 pb-14 sm:pb-16 md:pb-20 px-4 sm:px-6 max-w-7xl mx-auto relative z-10">
+        <section className="mb-8 sm:mb-10 md:mb-12">
+          <div className="grid gap-4 sm:gap-5 md:gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+            <div className="relative overflow-hidden rounded-3xl border border-white/15 bg-[radial-gradient(circle_at_15%_20%,rgba(255,255,255,0.12),transparent_45%),linear-gradient(145deg,rgba(20,20,22,0.9),rgba(8,8,9,0.95))] p-6 sm:p-7 md:p-10 lg:p-12">
+              <div className="absolute -right-20 top-0 h-60 w-60 rounded-full bg-white/10 blur-[110px]" />
+              <motion.h1
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="font-display text-5xl sm:text-6xl md:text-8xl font-black leading-[0.82] tracking-tighter uppercase"
+              >
+                Burn <br />
+                <span className="text-white/25">to</span> <br />
+                Redeem
+              </motion.h1>
+              <p className="mt-5 sm:mt-6 md:mt-7 max-w-lg text-lg sm:text-xl leading-relaxed text-white/68">
+                {websiteCopy.burnHeroSubtitle}
+              </p>
+            </div>
+
+            <div className="grid gap-4">
+              <div className="glass-panel rounded-3xl p-5 sm:p-6 md:p-7">
+                <div className="flex items-center gap-3 text-xs font-mono uppercase tracking-[0.16em] text-white/45">
+                  <Shield className="h-4 w-4" />
+                  Protocol Status
+                </div>
+                <div className="mt-4 sm:mt-5 flex items-end justify-between">
+                  <div>
+                    <div className="font-display text-4xl sm:text-5xl font-black">ACTIVE</div>
+                    <div className="mt-2 text-xs font-mono uppercase tracking-[0.14em] text-white/45">Network: Base Mainnet</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="font-display text-4xl sm:text-5xl font-black">{totalBurnableUnits}</div>
+                    <div className="mt-2 text-xs font-mono uppercase tracking-[0.14em] text-white/45">Burnable Units</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="glass-panel rounded-3xl p-4 sm:p-5 md:p-6">
+                <div className="grid grid-cols-2 gap-3 sm:gap-4">
+                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3 sm:p-4">
+                    <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-white/45">Credits</div>
+                    <div className="mt-2 font-display text-3xl font-bold">{balance}</div>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-black/30 p-3 sm:p-4">
+                    <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-white/45">Wallet</div>
+                    <div className="mt-2 text-sm font-mono text-white/80">{shortAddress(walletAddress)}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="mb-8 sm:mb-10 md:mb-12">
+          <div className="relative overflow-hidden rounded-3xl border border-white/15 bg-gradient-to-r from-neutral-950/95 via-black/80 to-neutral-900/70 p-4 sm:p-5 md:p-7">
+            <div className="absolute -right-10 -top-8 h-28 w-28 rounded-full bg-white/10 blur-3xl" />
+            <div className="absolute -left-10 -bottom-8 h-24 w-24 rounded-full bg-cyan-300/10 blur-3xl" />
             {entryMode === 'claim' ? (
               <>
-                <div className="font-mono uppercase text-xs tracking-[0.16em] text-white/60">Claim Confirmed</div>
-                <div className="mt-2 text-white/85">
+                <div className="inline-flex items-center gap-2 rounded-full border border-cyan-300/30 bg-cyan-300/10 px-3 py-1 text-[10px] font-mono uppercase tracking-[0.18em] text-cyan-200">
+                  <Check className="h-3.5 w-3.5" />
+                  Claim Confirmed
+                </div>
+                <div className="mt-3 text-base text-white/90">
                   {claimResponse?.rewardNftsPerClaim || 0} reward NFTs claimed from treasury.
                 </div>
                 {claimResponse?.txHash ? (
@@ -531,59 +1416,25 @@ function BurnWebsite({
               </>
             ) : (
               <>
-                <div className="font-mono uppercase text-xs tracking-[0.16em] text-white/60">Gate Access Confirmed</div>
-                <div className="mt-2 text-white/85">
-                  Website access granted via token-gate NFT. No new rewards were claimed in this session.
+                <div className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/5 px-3 py-1 text-[10px] font-mono uppercase tracking-[0.18em] text-white/75">
+                  <Flame className="h-3.5 w-3.5" />
+                  Sacrifice the many for the one.
+                </div>
+                <div className="mt-3 max-w-5xl text-[12px] leading-relaxed text-white/88 md:text-sm">
+                  The ultimate sacrifice for digital evolution. Destroy the past to claim the future. A deflationary
+                  art experiment on the edge of the void.
                 </div>
               </>
             )}
           </div>
         </section>
 
-        <section className="mb-24">
-          <div className="grid lg:grid-cols-2 gap-12 items-end">
-            <div>
-              <motion.h1
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="font-display text-6xl md:text-8xl font-black leading-[0.85] tracking-tighter uppercase mb-8"
-              >
-                Burn <br />
-                <span className="text-white/20">to</span> <br />
-                Redeem
-              </motion.h1>
-              <p className="text-white/60 max-w-md text-lg leading-relaxed">
-                {websiteCopy.burnHeroSubtitle}
-              </p>
-            </div>
-
-            <div className="flex flex-col gap-4">
-              <div className="glass-panel p-6 rounded-2xl">
-                <div className="flex items-center gap-4 mb-4">
-                  <Shield className="w-5 h-5 text-white/40" />
-                  <span className="text-xs font-mono uppercase tracking-widest text-white/40">Protocol Status</span>
-                </div>
-                <div className="flex justify-between items-end">
-                  <div>
-                    <div className="text-3xl font-display font-bold">ACTIVE</div>
-                    <div className="text-xs font-mono text-white/40">NETWORK: BASE MAINNET</div>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-3xl font-display font-bold">{totalBurnableUnits}</div>
-                    <div className="text-xs font-mono text-white/40">BURNABLE_UNITS</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section className="mb-10">
-          <div className="glass-panel rounded-2xl p-3">
-            <div className="flex flex-wrap items-center gap-2">
+        <section className="mb-4 sm:mb-6 md:mb-8">
+          <div className="glass-panel rounded-2xl p-2.5 sm:p-3">
+            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
               <button
                 onClick={() => setActiveTab('nfts')}
-                className={`px-4 py-2 text-xs font-mono uppercase tracking-[0.14em] rounded-lg border ${
+                className={`px-3 py-1.5 sm:px-4 sm:py-2 text-[11px] sm:text-xs font-mono uppercase tracking-[0.14em] rounded-lg border ${
                   activeTab === 'nfts'
                     ? 'bg-white text-black border-white'
                     : 'bg-black/40 text-white/70 border-white/20 hover:text-white'
@@ -593,7 +1444,7 @@ function BurnWebsite({
               </button>
               <button
                 onClick={() => setActiveTab('rewards')}
-                className={`px-4 py-2 text-xs font-mono uppercase tracking-[0.14em] rounded-lg border ${
+                className={`px-3 py-1.5 sm:px-4 sm:py-2 text-[11px] sm:text-xs font-mono uppercase tracking-[0.14em] rounded-lg border ${
                   activeTab === 'rewards'
                     ? 'bg-white text-black border-white'
                     : 'bg-black/40 text-white/70 border-white/20 hover:text-white'
@@ -601,14 +1452,64 @@ function BurnWebsite({
               >
                 {websiteCopy.rewardsTabLabel}
               </button>
+              <button
+                onClick={() => setActiveTab('b2r')}
+                className={`px-3 py-1.5 sm:px-4 sm:py-2 text-[11px] sm:text-xs font-mono uppercase tracking-[0.14em] rounded-lg border ${
+                  activeTab === 'b2r'
+                    ? 'bg-white text-black border-white'
+                    : 'bg-black/40 text-white/70 border-white/20 hover:text-white'
+                }`}
+              >
+                B2R
+              </button>
+              <button
+                onClick={() => setActiveTab('bonfire')}
+                className={`px-3 py-1.5 sm:px-4 sm:py-2 text-[11px] sm:text-xs font-mono uppercase tracking-[0.14em] rounded-lg border ${
+                  activeTab === 'bonfire'
+                    ? 'bg-white text-black border-white'
+                    : 'bg-black/40 text-white/70 border-white/20 hover:text-white'
+                }`}
+              >
+                BONFIRE
+              </button>
+              <button
+                onClick={() => setActiveTab('monochrome')}
+                className={`px-3 py-1.5 sm:px-4 sm:py-2 text-[11px] sm:text-xs font-mono uppercase tracking-[0.14em] rounded-lg border ${
+                  activeTab === 'monochrome'
+                    ? 'bg-white text-black border-white'
+                    : 'bg-black/40 text-white/70 border-white/20 hover:text-white'
+                }`}
+              >
+                MONOCHROME
+              </button>
+              <button
+                onClick={() => setActiveTab('destiny')}
+                className={`px-3 py-1.5 sm:px-4 sm:py-2 text-[11px] sm:text-xs font-mono uppercase tracking-[0.14em] rounded-lg border ${
+                  activeTab === 'destiny'
+                    ? 'bg-white text-black border-white'
+                    : 'bg-black/40 text-white/70 border-white/20 hover:text-white'
+                }`}
+              >
+                DESTINY
+              </button>
+              <button
+                onClick={() => setActiveTab('leaderboard')}
+                className={`px-3 py-1.5 sm:px-4 sm:py-2 text-[11px] sm:text-xs font-mono uppercase tracking-[0.14em] rounded-lg border ${
+                  activeTab === 'leaderboard'
+                    ? 'bg-white text-black border-white'
+                    : 'bg-black/40 text-white/70 border-white/20 hover:text-white'
+                }`}
+              >
+                LEADERBOARD
+              </button>
             </div>
           </div>
         </section>
 
         {activeTab === 'nfts' ? (
-          <section id="gallery" className="mb-32">
-            <div className="flex items-center justify-between mb-12">
-              <h2 className="font-display text-4xl font-bold uppercase tracking-tighter">{websiteCopy.nftsSectionTitle}</h2>
+          <section id="gallery" className="mb-20 md:mb-24">
+            <div className="mb-5 sm:mb-7 md:mb-8 flex flex-col items-start gap-3 md:flex-row md:items-center md:justify-between">
+              <h2 className="font-display text-3xl sm:text-4xl font-bold uppercase tracking-tighter">{websiteCopy.nftsSectionTitle}</h2>
               <div className="flex items-center gap-2 text-xs font-mono text-white/40">
                 <Info className="w-4 h-4" />
                 SELECT AN NFT TO BURN FOR CREDITS
@@ -622,13 +1523,13 @@ function BurnWebsite({
             ) : null}
 
             {inventoryNote ? (
-              <div className="mb-6 rounded-xl border border-neutral-700/70 bg-neutral-900/70 px-4 py-3 text-xs font-mono text-neutral-300">
+              <div className="mb-4 sm:mb-6 rounded-xl border border-neutral-700/70 bg-neutral-900/70 px-4 py-3 text-xs font-mono text-neutral-300">
                 {inventoryNote}
               </div>
             ) : null}
 
             {burnError ? (
-              <div className="mb-6 rounded-xl border border-red-700/60 bg-red-900/20 px-4 py-3 text-xs font-mono text-red-200">
+              <div className="mb-4 sm:mb-6 rounded-xl border border-red-700/60 bg-red-900/20 px-4 py-3 text-xs font-mono text-red-200">
                 {burnError}
               </div>
             ) : null}
@@ -638,60 +1539,70 @@ function BurnWebsite({
                 No burnable NFTs found for this wallet.
               </div>
             ) : (
-              <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-5">
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4 lg:gap-5">
                 <AnimatePresence mode="popLayout">
-                  {userNfts.map((nft) => (
-                    <motion.div
-                      key={nft.id}
-                      layout
-                      initial={{ opacity: 0, scale: 0.9 }}
-                      animate={{
-                        opacity: burnedId === nft.id ? 0 : 1,
-                        scale: burnedId === nft.id ? 1.05 : 1
-                      }}
-                      exit={{ opacity: 0, scale: 0.8 }}
-                      onClick={() => !isBurning && setSelectedNft(nft)}
-                      className={`group cursor-pointer rounded-2xl overflow-hidden brutalist-border bg-black/55 ${selectedNft?.id === nft.id ? 'border-white ring-2 ring-white/20' : ''}`}
-                    >
-                      <div className="aspect-[4/3] overflow-hidden bg-neutral-900">
-                        {nft.image ? (
-                          <img
-                            src={nft.image}
-                            alt={nft.name}
-                            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                            referrerPolicy="no-referrer"
-                          />
-                        ) : (
-                          <div className="w-full h-full bg-gradient-to-br from-neutral-800 to-neutral-900 flex items-center justify-center text-xs text-neutral-400 font-mono uppercase">
-                            No Image
-                          </div>
-                        )}
-                      </div>
+                  {userNfts.map((nft, index) => {
+                    const hoverRotate = index % 2 === 0 ? -1.4 : 1.4;
+                    return (
+                      <motion.div
+                        key={nft.id}
+                        layout
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{
+                          opacity: burnedId === nft.id ? 0 : 1,
+                          scale: burnedId === nft.id ? 1.05 : 1
+                        }}
+                        whileHover={{ y: -10, rotate: hoverRotate, scale: 1.02 }}
+                        whileTap={{ scale: 0.985, rotate: 0 }}
+                        transition={{ type: 'spring', stiffness: 240, damping: 20 }}
+                        exit={{ opacity: 0, scale: 0.8 }}
+                        onClick={() => !isBurning && setSelectedNft(nft)}
+                        className={`group relative cursor-pointer rounded-2xl overflow-hidden brutalist-border bg-black/55 shadow-[0_12px_30px_rgba(0,0,0,0.45)] ${selectedNft?.id === nft.id ? 'border-white ring-2 ring-white/20' : ''}`}
+                      >
+                        <div className="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
+                          <div className="absolute inset-0 bg-[radial-gradient(circle_at_35%_20%,rgba(255,255,255,0.18),transparent_52%)]" />
+                          <div className="absolute inset-x-6 bottom-0 h-20 bg-cyan-300/15 blur-2xl" />
+                        </div>
+                        <div className="relative aspect-square overflow-hidden bg-gradient-to-br from-neutral-950 to-neutral-900 p-3">
+                          {nft.image ? (
+                            <img
+                              src={nft.image}
+                              alt={nft.name}
+                              className="h-full w-full rounded-xl object-cover ring-1 ring-white/10 transition-transform duration-500 group-hover:scale-[1.06]"
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            <div className="w-full h-full bg-gradient-to-br from-neutral-800 to-neutral-900 flex items-center justify-center text-xs text-neutral-400 font-mono uppercase">
+                              No Image
+                            </div>
+                          )}
+                        </div>
 
-                      <div className="p-4 border-t border-white/10">
-                        <div className="flex justify-between items-start mb-2">
-                          <div>
-                            <h3 className="font-display font-bold text-sm leading-tight mb-1">{nft.name}</h3>
-                            <p className="text-[10px] font-mono text-white/40 uppercase tracking-widest">{nft.collection}</p>
+                        <div className="relative p-3 sm:p-4 border-t border-white/10">
+                          <div className="flex justify-between items-start mb-2">
+                            <div>
+                              <h3 className="font-display font-bold text-sm leading-tight mb-1">{nft.name}</h3>
+                              <p className="text-[10px] font-mono text-white/40 uppercase tracking-widest">{nft.collection}</p>
+                            </div>
+                            <div className="px-2 py-1 bg-white/10 rounded text-[10px] font-mono uppercase">x{nft.quantity || 1}</div>
                           </div>
-                          <div className="px-2 py-1 bg-white/10 rounded text-[10px] font-mono uppercase">x{nft.quantity || 1}</div>
-                        </div>
-                        <div className="flex items-center justify-between mt-3">
-                          <div className="flex items-center gap-2">
-                            <Flame className="w-4 h-4 text-white/40" />
-                            <span className="font-mono text-sm font-bold">
-                              {nft.burnValue} <span className="text-white/40">CREDITS</span>
-                            </span>
+                          <div className="flex items-center justify-between mt-3">
+                            <div className="flex items-center gap-2">
+                              <Flame className="w-4 h-4 text-white/50" />
+                              <span className="font-mono text-sm font-bold">
+                                {nft.burnValue} <span className="text-white/40">CREDITS</span>
+                              </span>
+                            </div>
+                            {selectedNft?.id === nft.id ? (
+                              <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} className="bg-white text-black p-1 rounded-full">
+                                <Check className="w-4 h-4" />
+                              </motion.div>
+                            ) : null}
                           </div>
-                          {selectedNft?.id === nft.id ? (
-                            <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} className="bg-white text-black p-1 rounded-full">
-                              <Check className="w-4 h-4" />
-                            </motion.div>
-                          ) : null}
                         </div>
-                      </div>
-                    </motion.div>
-                  ))}
+                      </motion.div>
+                    );
+                  })}
                 </AnimatePresence>
               </div>
             )}
@@ -732,7 +1643,7 @@ function BurnWebsite({
                     </div>
                   </div>
                   <button
-                    onClick={handleBurn}
+                    onClick={() => void handleBurn()}
                     disabled={isBurning}
                     className={`h-16 px-8 rounded-xl font-display font-bold uppercase tracking-tighter text-lg flex items-center gap-3 transition-all ${isBurning ? 'bg-black/10 cursor-not-allowed' : 'bg-black text-white hover:scale-105 active:scale-95'}`}
                   >
@@ -764,13 +1675,177 @@ function BurnWebsite({
         </AnimatePresence>
 
         {activeTab === 'rewards' ? (
-          <section id="redeem" className="mb-32">
-            <div className="flex items-center justify-between mb-12">
-              <h2 className="font-display text-4xl font-bold uppercase tracking-tighter">{websiteCopy.rewardsSectionTitle}</h2>
+          <section id="redeem" className="mb-24 md:mb-32">
+            <div className="mb-8 md:mb-12 flex flex-col items-start gap-3 md:flex-row md:items-center md:justify-between">
+              <h2 className="font-display text-3xl sm:text-4xl font-bold uppercase tracking-tighter">{websiteCopy.rewardsSectionTitle}</h2>
               <div className="flex items-center gap-2 text-xs font-mono text-white/40">
                 <Zap className="w-4 h-4" />
-                USE CREDITS TO UNLOCK EXCLUSIVE ITEMS
+                LIVE REDEEMED NFTS FROM YOUR BURNS
               </div>
+            </div>
+
+            <div className="mb-8 rounded-2xl border border-white/15 bg-neutral-900/70 p-5">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <div className="text-xs font-mono uppercase tracking-[0.16em] text-white/55">CID Reward Spin Vault</div>
+                  <div className="mt-2 max-w-3xl text-sm text-white/82">
+                    Spin the carousel through your 5 CID reward images, land on one, then mint it or keep spinning.
+                  </div>
+                </div>
+                <div className="rounded-lg border border-white/15 bg-black/40 px-3 py-2 text-right">
+                  <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-white/45">Mint Contract</div>
+                  <div className="mt-1 font-mono text-[11px] text-white/75">
+                    {rewardCidMintContract || rewardCollectionAddress || 'Not configured'}
+                  </div>
+                </div>
+              </div>
+
+              {isRewardCidGalleryLoading ? (
+                <div className="mt-5 rounded-xl border border-white/10 bg-black/30 px-4 py-3 text-xs font-mono text-white/60">
+                  Loading reward CID gallery...
+                </div>
+              ) : null}
+
+              {rewardCidGalleryError ? (
+                <div className="mt-5 rounded-xl border border-red-700/60 bg-red-900/20 px-4 py-3 text-xs font-mono text-red-200">
+                  {rewardCidGalleryError}
+                </div>
+              ) : null}
+
+              {!isRewardCidGalleryLoading && !rewardCidGalleryError && rewardCidGallery.length > 0 ? (
+                <>
+                  <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-5">
+                    {rewardCidGallery.map((item, index) => {
+                      const isActive = selectedRewardCid?.cid === item.cid;
+                      return (
+                        <div
+                          key={`cid-gallery-${item.cid}-${index}`}
+                          className={`overflow-hidden rounded-xl border bg-black/35 ${
+                            isActive ? 'border-cyan-300/70 ring-1 ring-cyan-200/35' : 'border-white/15'
+                          }`}
+                        >
+                          <div className="aspect-square bg-neutral-950 p-2">
+                            <img
+                              src={item.imageUrl}
+                              alt={item.label}
+                              className="h-full w-full rounded-lg object-cover"
+                              referrerPolicy="no-referrer"
+                            />
+                          </div>
+                          <div className="border-t border-white/10 px-3 py-2">
+                            <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-white/48">{item.label}</div>
+                            <div className="mt-1 truncate font-display text-xs font-bold uppercase tracking-tight text-white/90">
+                              {item.name || item.cid}
+                            </div>
+                            <div className="mt-1 truncate font-mono text-[11px] text-white/70">{item.cid}</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mt-6 overflow-hidden rounded-2xl border border-white/15 bg-black/35 p-3">
+                    <div className="relative overflow-hidden rounded-xl border border-white/10 bg-neutral-950/70 py-3">
+                      <div className="pointer-events-none absolute inset-y-1 left-1/2 z-20 w-0.5 -translate-x-1/2 bg-cyan-200/80 shadow-[0_0_25px_rgba(34,211,238,0.9)]" />
+                      <motion.div
+                        className="flex items-center gap-3 px-3"
+                        animate={{
+                          x: `calc(50% - ${(rewardSpinIndex + 0.5) * REWARD_SPIN_CARD_WIDTH}px)`
+                        }}
+                        transition={{
+                          duration: isRewardSpinRunning ? 0.08 : 0.3,
+                          ease: isRewardSpinRunning ? 'linear' : [0.22, 1, 0.36, 1]
+                        }}
+                      >
+                        {rewardSpinStrip.map((item, index) => {
+                          const isCenter = index === rewardSpinIndex;
+                          return (
+                            <div
+                              key={`reward-spin-${item.cid}-${index}`}
+                              style={{ width: REWARD_SPIN_CARD_WIDTH }}
+                              className={`flex-shrink-0 overflow-hidden rounded-lg border bg-black/45 transition-all ${
+                                isCenter ? 'border-cyan-300/70 shadow-[0_0_24px_rgba(34,211,238,0.35)]' : 'border-white/15'
+                              }`}
+                            >
+                              <div className="h-24 w-full bg-neutral-900 p-2">
+                                <img
+                                  src={item.imageUrl}
+                                  alt={item.label}
+                                  className="h-full w-full rounded-md object-cover"
+                                  referrerPolicy="no-referrer"
+                                />
+                              </div>
+                              <div className="border-t border-white/10 px-2.5 py-2">
+                                <div className="text-[10px] font-mono uppercase tracking-[0.13em] text-white/50">
+                                  {item.label}
+                                </div>
+                                <div className="mt-1 truncate font-display text-[11px] font-bold uppercase tracking-tight text-white/90">
+                                  {item.name || item.cid}
+                                </div>
+                                <div className="mt-1 truncate font-mono text-[10px] text-white/65">{item.cid}</div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </motion.div>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 flex flex-wrap items-center gap-3">
+                    <button
+                      onClick={() => void handleSpinRewardCarousel()}
+                      disabled={isRewardSpinRunning || isRewardCidMinting}
+                      className="rounded-lg border border-cyan-300/40 bg-cyan-300/15 px-4 py-2 text-xs font-mono uppercase tracking-[0.14em] text-cyan-100 hover:bg-cyan-300/25 disabled:opacity-45"
+                    >
+                      {isRewardSpinRunning ? 'Spinning...' : rewardSpinResultIndex === null ? 'Spin Fast' : 'Continue Spinning'}
+                    </button>
+                    <button
+                      onClick={() => void handleMintSelectedRewardCid()}
+                      disabled={
+                        !gatePass ||
+                        rewardSpinResultIndex === null ||
+                        !selectedRewardCid ||
+                        isRewardSpinRunning ||
+                        isRewardCidMinting
+                      }
+                      className="rounded-lg bg-white px-4 py-2 text-xs font-mono uppercase tracking-[0.14em] text-black disabled:opacity-45"
+                    >
+                      {isRewardCidMinting ? 'Minting...' : 'Mint Selected'}
+                    </button>
+                    <div className="text-xs font-mono uppercase tracking-[0.13em] text-white/60">
+                      {selectedRewardCid ? `Current: ${selectedRewardCid.name || selectedRewardCid.label}` : 'Spin to select a CID reward'}
+                    </div>
+                  </div>
+
+                  {selectedRewardCid?.description ? (
+                    <div className="mt-3 rounded-xl border border-white/12 bg-black/30 px-4 py-3 text-xs text-white/70">
+                      {selectedRewardCid.description}
+                    </div>
+                  ) : null}
+
+                  {rewardCidMintError ? (
+                    <div className="mt-4 rounded-xl border border-red-700/60 bg-red-900/20 px-4 py-3 text-xs font-mono text-red-200">
+                      {rewardCidMintError}
+                    </div>
+                  ) : null}
+
+                  {rewardCidMintSuccess ? (
+                    <div className="mt-4 rounded-xl border border-emerald-600/50 bg-emerald-900/20 px-4 py-3 text-xs font-mono text-emerald-200">
+                      {rewardCidMintSuccess}
+                      {rewardCidMintTxHash ? (
+                        <a
+                          href={`https://basescan.org/tx/${rewardCidMintTxHash}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="ml-2 underline"
+                        >
+                          View tx
+                        </a>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
             </div>
 
             <div className="mb-8 rounded-2xl border border-white/15 bg-neutral-900/70 p-5">
@@ -786,7 +1861,7 @@ function BurnWebsite({
                   </div>
                 </div>
                 <button
-                  onClick={onClaimRewards}
+                  onClick={() => void handleClaimRewardsInteractive()}
                   disabled={!gatePass || isClaimSigning || Boolean(claimResponse?.ok)}
                   className="rounded-lg bg-cyan-300 px-4 py-2 font-semibold text-black disabled:opacity-50"
                 >
@@ -807,66 +1882,1398 @@ function BurnWebsite({
             {burnDrops.length > 0 ? (
               <div className="mb-8 rounded-2xl border border-white/15 bg-neutral-900/70 p-5">
                 <div className="text-xs font-mono uppercase tracking-[0.16em] text-white/55 mb-4">Burn Drop Wins</div>
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {burnDrops.map((drop, index) => (
                     <a
                       key={`${drop.cid}-${index}`}
-                      href={drop.imageUrl}
+                      href={drop.tokenUri || drop.imageUrl}
                       target="_blank"
                       rel="noreferrer"
-                      className="group rounded-lg overflow-hidden border border-white/10 bg-black/40"
+                      className="group rounded-lg border border-white/10 bg-black/40 px-4 py-3 hover:border-white/25 transition-colors"
                     >
-                      <div className="aspect-square overflow-hidden bg-neutral-900">
-                        <img
-                          src={drop.imageUrl}
-                          alt={drop.cid}
-                          className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                          referrerPolicy="no-referrer"
-                        />
+                      <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-white/45">CID</div>
+                      <div className="mt-1 truncate font-mono text-sm text-white/85">{drop.cid}</div>
+                      <div className="mt-2 text-[10px] font-mono uppercase tracking-[0.14em] text-cyan-300/80">
+                        Open Metadata
                       </div>
-                      <div className="p-2 text-[10px] font-mono text-white/70 truncate">{drop.cid}</div>
                     </a>
                   ))}
                 </div>
               </div>
             ) : null}
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-              {MOCK_REWARDS.map((reward) => (
-                <div key={reward.id} className="glass-panel rounded-3xl overflow-hidden flex flex-col">
-                  <div className="aspect-[4/3] overflow-hidden">
-                    <img
-                      src={reward.image}
-                      alt={reward.name}
-                      className="w-full h-full object-cover transition-transform duration-500 hover:scale-105"
-                      referrerPolicy="no-referrer"
-                    />
-                  </div>
-                  <div className="p-8 flex-grow flex flex-col">
-                    <div className="flex justify-between items-start mb-4">
-                      <h3 className="font-display font-bold text-2xl uppercase tracking-tighter leading-none">{reward.name}</h3>
-                      <div className="text-xs font-mono text-white/40">STOCK: {reward.stock}</div>
+            <div className="mb-5 rounded-2xl border border-white/12 bg-neutral-900/60 px-4 py-3">
+              <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/45">Reward Contract</div>
+              <div className="mt-1 font-mono text-xs text-white/80 break-all">
+                {rewardCollectionAddress || 'Not configured'}
+              </div>
+            </div>
+
+            <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/12 bg-neutral-900/40 px-4 py-3">
+              <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/50">
+                Sort: Newest First
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-[10px] font-mono uppercase tracking-[0.14em] text-white/45">Show Last</label>
+                <select
+                  value={redeemedLimit}
+                  onChange={(event) => setRedeemedLimit(Number(event.target.value) as RedeemedLimitOption)}
+                  className="rounded-lg border border-white/20 bg-black/60 px-2.5 py-1.5 text-xs font-mono text-white"
+                >
+                  <option value={6}>6</option>
+                  <option value={12}>12</option>
+                  <option value={24}>24</option>
+                  <option value={40}>40</option>
+                  <option value={80}>80</option>
+                </select>
+                <button
+                  onClick={() => setRedeemedRefreshNonce((value) => value + 1)}
+                  className="rounded-lg border border-white/20 bg-black/40 px-3 py-1.5 text-[10px] font-mono uppercase tracking-[0.14em] text-white/80 hover:text-white"
+                >
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            {isRedeemedRewardsLoading ? (
+              <div className="glass-panel rounded-3xl p-10 text-center text-white/60">Loading redeemed NFTs...</div>
+            ) : null}
+
+            {redeemedRewardsError ? (
+              <div className="mb-6 rounded-xl border border-red-700/60 bg-red-900/20 px-4 py-3 text-xs font-mono text-red-200">
+                {redeemedRewardsError}
+              </div>
+            ) : null}
+
+            {!isRedeemedRewardsLoading && !redeemedRewardsError && redeemedRewards.length === 0 ? (
+              <div className="glass-panel rounded-3xl p-10 text-center text-white/55">
+                No redeemed burn NFTs found for this wallet yet.
+              </div>
+            ) : null}
+
+            {redeemedRewards.length > 0 ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5 md:gap-6">
+                {redeemedRewards.map((nft) => (
+                  <div key={`${nft.tokenId}-${nft.txHash}`} className="glass-panel rounded-3xl overflow-hidden flex flex-col">
+                    <div className="aspect-square bg-neutral-950 border-b border-white/10">
+                      {nft.imageUrl ? (
+                        <img
+                          src={nft.imageUrl}
+                          alt={nft.name}
+                          className="h-full w-full object-cover"
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : (
+                        <div className="h-full w-full flex items-center justify-center text-xs font-mono uppercase text-white/35">
+                          No Image
+                        </div>
+                      )}
                     </div>
-                    <p className="text-white/60 text-sm mb-8 leading-relaxed">{reward.description}</p>
-                    <div className="mt-auto pt-6 border-t border-white/10 flex items-center justify-between">
-                      <div className="font-mono text-xl font-bold">
-                        {reward.cost} <span className="text-white/40 text-xs">CREDITS</span>
+
+                    <div className="p-5 flex flex-col gap-3">
+                      <div className="flex items-start justify-between gap-4">
+                        <h3 className="font-display text-2xl font-bold uppercase tracking-tight">{nft.name}</h3>
+                        <div className="text-[10px] font-mono uppercase text-white/45">#{nft.tokenId}</div>
                       </div>
-                      <button
-                        onClick={() => handleRedeem(reward)}
-                        disabled={balance < reward.cost}
-                        className={`px-6 py-3 rounded-xl font-display font-bold uppercase tracking-tighter transition-all ${balance >= reward.cost ? 'bg-white text-black hover:scale-105 active:scale-95' : 'bg-white/5 text-white/20 cursor-not-allowed'}`}
-                      >
-                        Redeem
-                      </button>
+
+                      {nft.description ? <p className="text-sm text-white/65 leading-relaxed">{nft.description}</p> : null}
+
+                      <div className="mt-1 flex flex-wrap gap-2">
+                        {nft.metadataUrl ? (
+                          <a
+                            href={nft.metadataUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="rounded-lg border border-white/20 px-3 py-1.5 text-[10px] font-mono uppercase tracking-[0.14em] text-white/75 hover:text-white"
+                          >
+                            Metadata
+                          </a>
+                        ) : null}
+                        {nft.basescanUrl ? (
+                          <a
+                            href={nft.basescanUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="rounded-lg border border-cyan-300/40 bg-cyan-300/10 px-3 py-1.5 text-[10px] font-mono uppercase tracking-[0.14em] text-cyan-200"
+                          >
+                            Mint Tx
+                          </a>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
+                ))}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+
+        {activeTab === 'b2r' ? (
+          <section id="b2r" className="mb-24 md:mb-32">
+            <div className="mb-8 md:mb-10 grid gap-4 md:gap-6 xl:grid-cols-5">
+              <div className="glass-panel rounded-3xl p-6 md:p-8 xl:col-span-3">
+                <div className="text-xs font-mono uppercase tracking-[0.16em] text-white/50">B2R Protocol</div>
+                <h2 className="mt-4 font-display text-4xl md:text-6xl font-black uppercase leading-[0.9] tracking-tight">
+                  Burn Assets.
+                  <br />
+                  Rebuild Value.
+                </h2>
+                <p className="mt-5 max-w-2xl text-white/70 leading-relaxed">
+                  B2R is the core loop: each burn is permanent, each sacrifice increases scarcity, and every burn
+                  converts into spendable game credits for future digital art.
+                </p>
+                <div className="mt-8 flex flex-wrap gap-3">
+                  <button
+                    onClick={openB2RCarousel}
+                    className="rounded-lg border border-white/20 bg-white/10 px-4 py-2 text-xs font-mono uppercase tracking-[0.14em] text-white hover:bg-white hover:text-black transition-colors"
+                  >
+                    Open NFTs To Burn
+                  </button>
+                  <button
+                    onClick={openRewardsCarousel}
+                    className="rounded-lg border border-white/20 bg-black/40 px-4 py-2 text-xs font-mono uppercase tracking-[0.14em] text-white/80 hover:text-white"
+                  >
+                    Open Redeemable Rewards
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid gap-3 md:gap-4 xl:col-span-2">
+                <div className="glass-panel rounded-2xl p-4 md:p-5">
+                  <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/45">Burnable Units</div>
+                  <div className="mt-2 font-display text-4xl font-bold">{totalBurnableUnits}</div>
+                </div>
+                <div className="glass-panel rounded-2xl p-4 md:p-5">
+                  <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/45">Current Credits</div>
+                  <div className="mt-2 font-display text-4xl font-bold">{balance}</div>
+                </div>
+                <div className="glass-panel rounded-2xl p-4 md:p-5">
+                  <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/45">Reward Mode</div>
+                  <div className="mt-2 text-sm font-mono uppercase text-white/80">
+                    Guaranteed CID mint + 20 credits per burn
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:gap-5 md:grid-cols-3">
+              {B2R_FLOW.map((item, index) => (
+                <div key={item.title} className="glass-panel rounded-2xl p-5 md:p-6">
+                  <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-white/45">
+                    Step {index + 1}
+                  </div>
+                  <div className="mt-3 font-display text-2xl font-bold uppercase tracking-tight">{item.title}</div>
+                  <p className="mt-3 text-sm text-white/70 leading-relaxed">{item.description}</p>
                 </div>
               ))}
             </div>
           </section>
         ) : null}
+
+        {activeTab === 'bonfire' ? (
+          <section id="bonfire" className="mb-24 md:mb-32">
+            <div className="mb-8 md:mb-10 grid gap-4 md:gap-6 xl:grid-cols-5">
+              <div className="glass-panel rounded-3xl p-6 md:p-8 xl:col-span-3">
+                <div className="text-xs font-mono uppercase tracking-[0.16em] text-white/50">Bonfire Ritual</div>
+                <h2 className="mt-4 font-display text-4xl md:text-6xl font-black uppercase leading-[0.9] tracking-tight">
+                  Sacrifice.
+                  <br />
+                  Transform.
+                </h2>
+                <p className="mt-5 max-w-2xl text-white/70 leading-relaxed">
+                  Imported from your BONFIRE design: choose a Genesis piece, burn it on-chain, and convert scarcity
+                  into credits and rewards.
+                </p>
+              </div>
+
+              <div className="grid gap-3 md:gap-4 xl:col-span-2">
+                <div className="glass-panel rounded-2xl p-4 md:p-5">
+                  <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/45">Selected Offering</div>
+                  <div className="mt-2 font-display text-2xl font-bold uppercase">
+                    {bonfireSelectedNft ? bonfireSelectedNft.name : 'None'}
+                  </div>
+                </div>
+                <div className="glass-panel rounded-2xl p-4 md:p-5">
+                  <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/45">Burn Value</div>
+                  <div className="mt-2 text-sm font-mono uppercase text-white/80">
+                    {bonfireSelectedNft ? `+${BURN_CREDITS_PER_NFT} credits` : 'Select an NFT'}
+                  </div>
+                </div>
+                <div className="glass-panel rounded-2xl p-4 md:p-5">
+                  <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/45">Collection</div>
+                  <div className="mt-2 text-sm font-mono uppercase text-white/80">{BURN_COLLECTION_SLUG || 'cc0-by-pierre'}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <h3 className="font-display text-3xl md:text-4xl font-bold uppercase tracking-tight">The Genesis Collection</h3>
+                <p className="mt-2 text-xs font-mono uppercase tracking-[0.16em] text-white/45">
+                  Pick an NFT to stage it in the Bonfire portal
+                </p>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => scrollBonfire('left')}
+                  disabled={userNfts.length === 0}
+                  className="rounded-full border border-white/15 p-3 text-white/75 hover:bg-white/10 disabled:opacity-30"
+                >
+                  <ChevronLeft className="h-5 w-5" />
+                </button>
+                <button
+                  onClick={() => scrollBonfire('right')}
+                  disabled={userNfts.length === 0}
+                  className="rounded-full border border-white/15 p-3 text-white/75 hover:bg-white/10 disabled:opacity-30"
+                >
+                  <ChevronRight className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+
+            {userNfts.length === 0 ? (
+              <div className="glass-panel rounded-3xl p-16 text-center text-white/50">
+                No burnable NFTs found for this wallet.
+              </div>
+            ) : (
+              <div ref={bonfireScrollRef} className="mb-12 flex gap-5 overflow-x-auto pb-2 no-scrollbar">
+                {userNfts.map((nft) => (
+                  <motion.button
+                    key={`bonfire-${nft.id}`}
+                    whileHover={{ y: -6 }}
+                    onClick={() => setBonfireSelectedNft(nft)}
+                    className={`group relative min-w-[250px] md:min-w-[300px] overflow-hidden rounded-2xl border bg-black/50 text-left ${
+                      bonfireSelectedNft?.id === nft.id ? 'border-white/70' : 'border-white/20'
+                    }`}
+                  >
+                    <div className="aspect-square overflow-hidden bg-gradient-to-br from-neutral-950 to-neutral-900 p-3">
+                      {nft.image ? (
+                        <img
+                          src={nft.image}
+                          alt={nft.name}
+                          className="h-full w-full rounded-xl object-cover ring-1 ring-white/10 transition-all duration-500 group-hover:scale-[1.03]"
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center text-xs font-mono uppercase text-white/40">
+                          No Image
+                        </div>
+                      )}
+                    </div>
+                    <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/60 to-transparent p-4">
+                      <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/55">{nft.collection}</div>
+                      <div className="mt-1 font-display text-xl font-bold uppercase tracking-tight">{nft.name}</div>
+                      <div className="mt-2 text-xs font-mono uppercase text-white/70">x{nft.quantity || 1}</div>
+                    </div>
+                  </motion.button>
+                ))}
+              </div>
+            )}
+
+            <div className="grid gap-5 md:gap-6 lg:grid-cols-2">
+              <div className="glass-panel rounded-3xl p-5 md:p-6">
+                <div className="grid gap-5 md:gap-6 md:grid-cols-[220px_1fr]">
+                  <div className="aspect-[4/5] overflow-hidden rounded-2xl border border-white/10 bg-neutral-950">
+                    {bonfireSelectedNft?.image ? (
+                      <img
+                        src={bonfireSelectedNft.image}
+                        alt={bonfireSelectedNft.name}
+                        className={`h-full w-full object-cover transition-all duration-500 ${isBurning ? 'blur-sm scale-105' : ''}`}
+                        referrerPolicy="no-referrer"
+                      />
+                    ) : (
+                      <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center text-white/40">
+                        <Plus className="h-9 w-9" />
+                        <div className="text-[10px] font-mono uppercase tracking-[0.16em]">
+                          Select an NFT to begin the ritual
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <h3 className="font-display text-3xl font-black uppercase tracking-tight">The Burn Portal</h3>
+                    <p className="mt-3 text-sm leading-relaxed text-white/68">
+                      Burning permanently removes supply. In exchange, each burn grants game credits and a chance to
+                      unlock a CID bonus drop.
+                    </p>
+
+                    <div className="mt-5 space-y-3">
+                      <div className="flex items-center gap-3 rounded-xl border border-white/10 bg-black/30 px-4 py-3">
+                        <Zap className="h-4 w-4 text-white/55" />
+                        <div>
+                          <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/45">Reward Value</div>
+                          <div className="text-sm font-mono">+{BURN_CREDITS_PER_NFT} Credits</div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 rounded-xl border border-white/10 bg-black/30 px-4 py-3">
+                        <RefreshCw className="h-4 w-4 text-white/55" />
+                        <div>
+                          <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/45">Drop Logic</div>
+                          <div className="text-sm font-mono">Guaranteed mint per burn</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-6 flex flex-wrap gap-3">
+                      <button
+                        onClick={() => handleBurn(bonfireSelectedNft || undefined)}
+                        disabled={!bonfireSelectedNft || isBurning}
+                        className="rounded-xl bg-white px-5 py-3 font-display text-sm font-bold uppercase tracking-[0.1em] text-black transition-transform hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {isBurning ? 'Processing...' : 'Initiate Burn'}
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (!bonfireSelectedNft) return;
+                          setSelectedNft(bonfireSelectedNft);
+                          setActiveTab('nfts');
+                        }}
+                        disabled={!bonfireSelectedNft || isBurning}
+                        className="rounded-xl border border-white/20 bg-black/30 px-5 py-3 text-xs font-mono uppercase tracking-[0.14em] text-white/80 hover:text-white disabled:opacity-40"
+                      >
+                        Open Burn Queue
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="glass-panel rounded-3xl p-5 md:p-6">
+                <h3 className="font-display text-3xl font-black uppercase tracking-tight">The Art of Destruction</h3>
+                <div className="mt-6 space-y-4">
+                  {BONFIRE_MANIFESTO.map((line, index) => (
+                    <div key={line} className="flex gap-4">
+                      <div className="pt-0.5 text-[10px] font-mono uppercase tracking-[0.16em] text-white/35">
+                        {String(index + 1).padStart(2, '0')}
+                      </div>
+                      <p className="text-sm leading-relaxed text-white/70">{line}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-8 rounded-2xl border border-white/12 bg-black/30 p-4">
+                  <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-[0.16em] text-white/45">
+                    <ShieldCheck className="h-4 w-4" />
+                    Bonfire Roadmap
+                  </div>
+                  <div className="mt-4 space-y-3">
+                    {BONFIRE_ROADMAP.map((item) => (
+                      <div key={item.phase} className="flex items-center justify-between rounded-xl border border-white/10 bg-black/20 p-3">
+                        <div>
+                          <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/40">{item.phase}</div>
+                          <div className="font-display text-base font-bold uppercase tracking-tight">{item.title}</div>
+                        </div>
+                        <div
+                          className={`rounded-full px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.14em] ${
+                            item.status === 'Live' || item.status === 'Active'
+                              ? 'bg-white text-black'
+                              : 'border border-white/30 text-white/70'
+                          }`}
+                        >
+                          {item.status}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        {activeTab === 'monochrome' ? (
+          <section id="monochrome" className="mb-24 md:mb-32">
+            <div className="mb-8 md:mb-10 grid gap-4 md:gap-6 xl:grid-cols-5">
+              <div className="glass-panel rounded-3xl p-6 md:p-8 xl:col-span-3">
+                <div className="text-xs font-mono uppercase tracking-[0.16em] text-white/50">Monochrome Protocol</div>
+                <h2 className="mt-4 font-display text-4xl md:text-6xl font-black uppercase leading-[0.9] tracking-tight">
+                  Burn.
+                  <br />
+                  Redeem.
+                </h2>
+                <p className="mt-5 max-w-2xl text-white/70 leading-relaxed">
+                  Sacrifice digital assets to unlock physical and digital redemptions. Imported from your monochrome-redemption build.
+                </p>
+              </div>
+
+              <div className="grid gap-3 md:gap-4 xl:col-span-2">
+                {[
+                  { label: 'Total Burned', value: '1,240' },
+                  { label: 'Redeemed', value: '842' },
+                  { label: 'Floor Price', value: '0.85 ETH' }
+                ].map((stat) => (
+                  <div key={stat.label} className="glass-panel rounded-2xl p-4 md:p-5">
+                    <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/45">{stat.label}</div>
+                    <div className="mt-2 font-display text-3xl font-bold">{stat.value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="mb-6 flex items-center justify-between gap-3">
+              <h3 className="font-display text-3xl md:text-4xl font-bold uppercase tracking-tight flex items-center gap-3">
+                <Layers className="h-7 w-7" />
+                Monochrome Gallery
+              </h3>
+              <span className="text-xs font-mono uppercase tracking-[0.14em] text-white/45">{monochromeNfts.length} Items Found</span>
+            </div>
+
+            {monochromeNfts.length === 0 ? (
+              <div className="glass-panel rounded-3xl p-12 text-center text-white/55">
+                All monochrome assets have been burned.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+                <AnimatePresence mode="popLayout">
+                  {monochromeNfts.map((nft) => (
+                    <motion.button
+                      key={`monochrome-${nft.id}`}
+                      layout
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.8, filter: 'blur(10px)' }}
+                      whileHover={{ y: -8 }}
+                      whileTap={{ scale: 0.99 }}
+                      className="group relative overflow-hidden rounded-2xl border border-white/10 bg-black/50 text-left"
+                      onClick={() => setMonochromeSelectedNft(nft)}
+                    >
+                      <div className="aspect-square overflow-hidden bg-neutral-950 p-3">
+                        <img
+                          src={nft.image}
+                          alt={nft.name}
+                          className="h-full w-full rounded-xl object-cover grayscale transition-all duration-700 group-hover:grayscale-0 group-hover:scale-110"
+                          referrerPolicy="no-referrer"
+                        />
+                      </div>
+                      <div className="border-t border-white/10 p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <h4 className="font-display text-xl font-bold tracking-tight">{nft.name}</h4>
+                            <p className="mt-1 text-[10px] font-mono uppercase tracking-[0.14em] text-white/45">
+                              {nft.rarity}
+                            </p>
+                          </div>
+                          <div className="rounded-full bg-white/10 p-2">
+                            <Flame className="h-4 w-4 text-white/70" />
+                          </div>
+                        </div>
+                        <div className="mt-4 rounded-lg border border-white/15 px-3 py-2 text-center text-[10px] font-mono uppercase tracking-[0.14em] text-white/75 transition-colors group-hover:bg-white group-hover:text-black">
+                          View Details
+                        </div>
+                      </div>
+                    </motion.button>
+                  ))}
+                </AnimatePresence>
+              </div>
+            )}
+
+            <AnimatePresence>
+              {monochromeSelectedNft ? (
+                <div className="fixed inset-0 z-[98] flex items-center justify-center p-6">
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    onClick={() => !isMonochromeBurning && setMonochromeSelectedNft(null)}
+                    className="absolute inset-0 bg-black/90 backdrop-blur-sm"
+                  />
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.92, y: 18 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.92, y: 18 }}
+                    className="relative w-full max-w-4xl overflow-hidden rounded-3xl border border-white/15 bg-neutral-950"
+                  >
+                    <div className="grid grid-cols-1 md:grid-cols-2">
+                      <div className="h-full bg-neutral-900">
+                        <img
+                          src={monochromeSelectedNft.image}
+                          alt={monochromeSelectedNft.name}
+                          className="h-full w-full object-cover grayscale"
+                          referrerPolicy="no-referrer"
+                        />
+                      </div>
+                      <div className="flex flex-col justify-between p-8 md:p-10">
+                        <div>
+                          <div className="flex items-start justify-between gap-4">
+                            <div>
+                              <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/45">
+                                Asset ID #{monochromeSelectedNft.id}
+                              </div>
+                              <h4 className="mt-2 font-display text-4xl font-black tracking-tight">
+                                {monochromeSelectedNft.name}
+                              </h4>
+                            </div>
+                            <button
+                              onClick={() => setMonochromeSelectedNft(null)}
+                              disabled={isMonochromeBurning}
+                              className="rounded-full p-2 text-white/70 hover:bg-white/10 hover:text-white"
+                            >
+                              <X className="h-5 w-5" />
+                            </button>
+                          </div>
+
+                          <p className="mt-5 text-sm leading-relaxed text-white/68">
+                            {monochromeSelectedNft.description}
+                          </p>
+
+                          <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-4">
+                            <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-[0.14em] text-white/65">
+                              <Info className="h-4 w-4" />
+                              Redemption Available
+                            </div>
+                            <p className="mt-3 text-xs leading-relaxed text-white/55">
+                              Burning this asset permanently removes it and unlocks a unique physical or digital redemption.
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="mt-8">
+                          <button
+                            onClick={() => void handleMonochromeBurn(monochromeSelectedNft)}
+                            disabled={isMonochromeBurning}
+                            className="w-full rounded-2xl bg-white px-4 py-4 text-sm font-black uppercase tracking-[0.12em] text-black disabled:opacity-50"
+                          >
+                            {isMonochromeBurning ? 'Burning Asset...' : 'Initiate Burn'}
+                          </button>
+                          <div className="mt-3 text-center text-[10px] font-mono uppercase tracking-[0.14em] text-white/40">
+                            Warning: This action is irreversible
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </motion.div>
+                </div>
+              ) : null}
+            </AnimatePresence>
+
+            <AnimatePresence>
+              {showMonochromeSuccess && monochromeRedeemedItem ? (
+                <div className="fixed inset-0 z-[99] flex items-center justify-center p-6">
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="absolute inset-0 bg-white"
+                  />
+                  <motion.div
+                    initial={{ opacity: 0, y: 32 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 32 }}
+                    className="relative w-full max-w-2xl space-y-10 text-center text-black"
+                  >
+                    <div className="flex justify-center">
+                      <div className="flex h-20 w-20 items-center justify-center rounded-full bg-black text-white">
+                        <CheckCircle2 className="h-10 w-10" />
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <h4 className="font-display text-6xl font-black uppercase tracking-tight">Redeemed</h4>
+                      <p className="mx-auto max-w-lg text-lg">
+                        You successfully burned your asset and unlocked <span className="underline">{monochromeRedeemedItem.name}</span>.
+                      </p>
+                    </div>
+
+                    <div className="mx-auto aspect-square max-w-xs overflow-hidden rounded-3xl border-4 border-black shadow-2xl">
+                      <img
+                        src={monochromeRedeemedItem.image}
+                        alt={monochromeRedeemedItem.name}
+                        className="h-full w-full object-cover grayscale"
+                        referrerPolicy="no-referrer"
+                      />
+                    </div>
+
+                    <div className="mx-auto flex max-w-sm flex-col gap-3">
+                      <button
+                        onClick={() => setShowMonochromeSuccess(false)}
+                        className="w-full rounded-2xl bg-black px-4 py-4 text-xs font-black uppercase tracking-[0.16em] text-white"
+                      >
+                        Return to Gallery
+                      </button>
+                      <button className="flex items-center justify-center gap-2 text-[10px] font-mono uppercase tracking-[0.14em] text-black/60">
+                        View Transaction <ExternalLink className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </motion.div>
+                </div>
+              ) : null}
+            </AnimatePresence>
+          </section>
+        ) : null}
+
+        {activeTab === 'destiny' ? (
+          <section id="destiny" className="mb-24 md:mb-32">
+            <div className="mb-8 md:mb-10 grid gap-4 md:gap-6 xl:grid-cols-[1.15fr_0.85fr]">
+              <div className="glass-panel relative overflow-hidden rounded-3xl p-6 md:p-8">
+                <div className="absolute -right-20 -top-16 h-56 w-56 rounded-full bg-yellow-400/15 blur-[95px]" />
+                <div className="absolute -left-16 -bottom-14 h-48 w-48 rounded-full bg-cyan-300/10 blur-[95px]" />
+                <div className="relative">
+                  <div className="text-xs font-mono uppercase tracking-[0.16em] text-yellow-200/70">Divine Reel</div>
+                  <h2 className="mt-4 font-display text-4xl md:text-6xl font-black uppercase leading-[0.9] tracking-tight">
+                    Destiny
+                    <br />
+                    Jackpot
+                  </h2>
+                  <p className="mt-5 max-w-2xl text-sm leading-relaxed text-white/72">
+                    Spin a ritual reel, let fate select one artifact, then reveal a stylized verdict and attire prophecy.
+                    Imported from your divine-reel-jackpot build and tuned to match this protocol UI.
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid gap-3 md:gap-4">
+                <div className="glass-panel rounded-2xl p-4 md:p-5">
+                  <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/45">Destiny Spins</div>
+                  <div className="mt-2 font-display text-4xl font-bold">{destinySpinCount}</div>
+                </div>
+                <div className="glass-panel rounded-2xl p-4 md:p-5">
+                  <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/45">Artifact Pool</div>
+                  <div className="mt-2 font-display text-4xl font-bold">{destinyImages.length}</div>
+                </div>
+                <div className="glass-panel rounded-2xl p-4 md:p-5">
+                  <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/45">Reel State</div>
+                  <div className="mt-2 text-sm font-mono uppercase text-white/80">
+                    {destinyGameState === 'spinning'
+                      ? 'Manifesting'
+                      : destinyGameState === 'stopping'
+                        ? 'Landing'
+                        : destinyGameState === 'result'
+                          ? 'Revealed'
+                          : 'Idle'}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:gap-5 xl:grid-cols-[0.9fr_1.3fr_0.8fr]">
+              <div className="glass-panel rounded-3xl p-5 md:p-6">
+                <div className="text-xs font-mono uppercase tracking-[0.16em] text-white/50">Asset Scribe</div>
+                <p className="mt-3 text-sm leading-relaxed text-white/68">
+                  Upload your own image set to replace the default destiny pool.
+                </p>
+                <button
+                  onClick={openDestinyUpload}
+                  className="mt-5 w-full rounded-xl border border-white/20 bg-white/10 px-4 py-3 text-xs font-mono uppercase tracking-[0.14em] text-white hover:bg-white hover:text-black transition-colors"
+                >
+                  Upload Destiny Images
+                </button>
+                <input
+                  ref={destinyUploadInputRef}
+                  type="file"
+                  multiple
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleDestinyUpload}
+                />
+
+                <div className="mt-6 rounded-xl border border-white/10 bg-black/30 p-4">
+                  <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-white/45">Pool History</div>
+                  <div className="mt-3 max-h-[280px] space-y-2 overflow-y-auto pr-1">
+                    {destinyImages.slice(0, 16).map((image, index) => (
+                      <div
+                        key={`destiny-pool-${image.id}`}
+                        className="flex items-center justify-between rounded-lg border border-white/10 bg-black/35 px-2.5 py-2"
+                      >
+                        <div className="truncate text-[10px] font-mono uppercase tracking-[0.12em] text-white/70">
+                          {image.name}
+                        </div>
+                        <div className="ml-2 text-[9px] font-mono uppercase text-white/35">
+                          #{String(index + 1).padStart(2, '0')}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="glass-panel rounded-3xl p-5 md:p-6">
+                <div className="relative overflow-hidden rounded-2xl border border-yellow-300/25 bg-black/45 p-3">
+                  <div className="pointer-events-none absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-black to-transparent opacity-85 z-20" />
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black to-transparent opacity-85 z-20" />
+                  <div className="pointer-events-none absolute inset-y-2 left-1 z-20 w-0.5 bg-yellow-200/60" />
+                  <div className="pointer-events-none absolute inset-y-2 right-1 z-20 w-0.5 bg-yellow-200/60" />
+                  <div className="pointer-events-none absolute inset-x-0 top-1/2 z-20 h-[2px] -translate-y-1/2 bg-yellow-300/45 shadow-[0_0_16px_rgba(250,204,21,0.65)]" />
+
+                  <div className="relative h-[420px] overflow-hidden rounded-xl border border-white/10 bg-neutral-950/70">
+                    <motion.div
+                      className="flex flex-col gap-3 px-3 py-3"
+                      animate={{
+                        y: `calc(50% - ${(destinyReelIndex + 0.5) * DESTINY_REEL_ITEM_HEIGHT}px)`
+                      }}
+                      transition={{
+                        duration: destinyGameState === 'spinning' ? 0.07 : destinyGameState === 'stopping' ? 0.18 : 0.32,
+                        ease: destinyGameState === 'spinning' ? 'linear' : [0.22, 1, 0.36, 1]
+                      }}
+                    >
+                      {destinyDisplayImages.map((image, index) => {
+                        const isCenter = index === destinyReelIndex;
+                        return (
+                          <div
+                            key={`destiny-reel-${image.id}-${index}`}
+                            className={`relative overflow-hidden rounded-xl border ${
+                              isCenter ? 'border-yellow-300/70 shadow-[0_0_24px_rgba(250,204,21,0.32)]' : 'border-white/12'
+                            }`}
+                            style={{ height: DESTINY_REEL_ITEM_HEIGHT - 12 }}
+                          >
+                            <img
+                              src={image.url}
+                              alt={image.name}
+                              className="h-full w-full object-cover grayscale transition-all duration-500 hover:grayscale-0"
+                              referrerPolicy="no-referrer"
+                            />
+                            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-3 py-2">
+                              <div className="truncate font-display text-sm font-bold uppercase tracking-tight text-white">
+                                {image.name}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </motion.div>
+                  </div>
+                </div>
+
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+                  <button
+                    onClick={() => void handleDestinySpin()}
+                    disabled={destinyGameState === 'spinning' || destinyGameState === 'stopping' || destinyImages.length === 0}
+                    className={`rounded-full border px-7 py-3 text-sm font-black uppercase tracking-[0.16em] transition-all ${
+                      destinyGameState === 'spinning' || destinyGameState === 'stopping'
+                        ? 'cursor-not-allowed border-white/20 bg-white/10 text-white/40'
+                        : 'border-yellow-200/60 bg-yellow-300 text-black hover:scale-[1.04] shadow-[0_0_24px_rgba(250,204,21,0.38)]'
+                    }`}
+                  >
+                    {destinyGameState === 'spinning' || destinyGameState === 'stopping' ? 'Manifesting...' : 'Spin Destiny'}
+                  </button>
+                  <div className="text-xs font-mono uppercase tracking-[0.14em] text-white/60">
+                    {selectedDestinyImage ? `Current: ${selectedDestinyImage.name}` : 'No artifact selected'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="glass-panel rounded-3xl p-5 md:p-6">
+                  <div className="text-xs font-mono uppercase tracking-[0.16em] text-yellow-200/75">The Verdict</div>
+                  <div className="mt-4 rounded-2xl border border-white/10 bg-black/35 p-3">
+                    {selectedDestinyImage ? (
+                      <img
+                        src={selectedDestinyImage.url}
+                        alt={selectedDestinyImage.name}
+                        className="h-44 w-full rounded-xl object-cover"
+                        referrerPolicy="no-referrer"
+                      />
+                    ) : (
+                      <div className="flex h-44 items-center justify-center rounded-xl bg-neutral-900 text-xs font-mono uppercase text-white/40">
+                        Awaiting spin
+                      </div>
+                    )}
+                    <div className="mt-3 text-[10px] font-mono uppercase tracking-[0.14em] text-white/45">
+                      {destinyTargetIndex !== null ? `Landed Slot #${destinyTargetIndex + 1}` : 'No landed slot yet'}
+                    </div>
+                    <div className="mt-1 font-display text-xl font-bold uppercase tracking-tight">
+                      {destinyFortune?.title || (selectedDestinyImage ? selectedDestinyImage.name : 'No Verdict')}
+                    </div>
+                    <p className="mt-2 text-xs leading-relaxed text-white/70">
+                      {isDestinyFortuneLoading
+                        ? 'Reading aura patterns and composing your prophecy...'
+                        : destinyFortune?.description || 'Spin to reveal the verdict.'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="glass-panel rounded-3xl p-5 md:p-6">
+                  <div className="text-xs font-mono uppercase tracking-[0.16em] text-cyan-200/75">Divine Attire</div>
+                  <p className="mt-3 text-sm leading-relaxed text-white/70">
+                    {isDestinyFortuneLoading
+                      ? 'Synchronizing wardrobe signals...'
+                      : destinyFortune?.attire || 'Attire insight appears after each spin result.'}
+                  </p>
+                </div>
+
+                <div className="glass-panel rounded-3xl p-5 md:p-6">
+                  <div className="text-xs font-mono uppercase tracking-[0.16em] text-white/50">Instructions</div>
+                  <div className="mt-3 space-y-2 text-xs text-white/65">
+                    <div>1. Upload custom images or use default destiny artifacts.</div>
+                    <div>2. Spin to roll fate and land on one manifest.</div>
+                    <div>3. Read verdict and attire to continue progression.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        {activeTab === 'leaderboard' ? (
+          <section id="leaderboard" className="mb-24 md:mb-32">
+            <div className="mb-8 grid gap-4 md:gap-6 xl:grid-cols-[1.3fr_0.7fr]">
+              <div className="glass-panel rounded-3xl p-6 md:p-8">
+                <div className="text-xs font-mono uppercase tracking-[0.16em] text-white/50">Live Leaderboard</div>
+                <h2 className="mt-4 font-display text-4xl md:text-6xl font-black uppercase leading-[0.9] tracking-tight">
+                  Game Progression
+                </h2>
+                <p className="mt-4 max-w-3xl text-sm leading-relaxed text-white/72">
+                  Real-time score combines burns, minted rewards, credits, and monochrome rituals from across all tabs.
+                </p>
+
+                <div className="mt-6 rounded-2xl border border-white/12 bg-black/30 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <Crown className="h-4 w-4 text-yellow-300" />
+                      <div className="text-xs font-mono uppercase tracking-[0.14em] text-white/70">
+                        Your Rank #{userLeaderboardEntry?.rank ?? '-'}
+                      </div>
+                    </div>
+                    <div className="text-xs font-mono uppercase tracking-[0.14em] text-white/70">
+                      Level {progressionLevel}
+                    </div>
+                  </div>
+                  <div className="mt-3 flex items-end justify-between gap-3">
+                    <div className="font-display text-4xl font-black">{progressionScore}</div>
+                    <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-white/45">XP Score</div>
+                  </div>
+                  <div className="mt-3">
+                    <div className="mb-1 flex items-center justify-between text-[10px] font-mono uppercase tracking-[0.13em] text-white/45">
+                      <span>Progress to level {progressionLevel + 1}</span>
+                      <span>{levelProgressPct}%</span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                      <motion.div
+                        initial={false}
+                        animate={{ width: `${levelProgressPct}%` }}
+                        transition={{ type: 'spring', stiffness: 180, damping: 24 }}
+                        className="h-full rounded-full bg-gradient-to-r from-cyan-300 via-sky-300 to-indigo-300"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-3 md:gap-4">
+                <div className="glass-panel rounded-2xl p-4 md:p-5">
+                  <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/45">Burnable Units</div>
+                  <div className="mt-2 font-display text-4xl font-bold">{totalBurnableUnits}</div>
+                </div>
+                <div className="glass-panel rounded-2xl p-4 md:p-5">
+                  <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/45">Rewards Minted</div>
+                  <div className="mt-2 font-display text-4xl font-bold">{mintedRewardCount}</div>
+                </div>
+                <div className="glass-panel rounded-2xl p-4 md:p-5">
+                  <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-white/45">Credits</div>
+                  <div className="mt-2 font-display text-4xl font-bold">{balance}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mb-6 grid gap-4 md:gap-5 xl:grid-cols-[1.2fr_0.8fr]">
+              <div className="glass-panel rounded-3xl p-5 md:p-6">
+                <div className="mb-4 flex items-center gap-2 text-xs font-mono uppercase tracking-[0.16em] text-white/50">
+                  <Trophy className="h-4 w-4" />
+                  Ranking Board
+                </div>
+                <div className="space-y-3">
+                  {leaderboardRows.map((entry) => (
+                    <div
+                      key={`lb-${entry.name}`}
+                      className={`flex items-center justify-between rounded-xl border px-4 py-3 ${
+                        entry.accent
+                          ? 'border-cyan-300/45 bg-cyan-300/10'
+                          : 'border-white/10 bg-black/25'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div
+                          className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-mono ${
+                            entry.rank === 1
+                              ? 'bg-yellow-300 text-black'
+                              : entry.rank === 2
+                                ? 'bg-white/80 text-black'
+                                : entry.rank === 3
+                                  ? 'bg-amber-700 text-white'
+                                  : 'bg-white/10 text-white'
+                          }`}
+                        >
+                          {entry.rank}
+                        </div>
+                        <div>
+                          <div className="font-display text-xl font-bold uppercase tracking-tight">{entry.name}</div>
+                          <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-white/45">{entry.badge}</div>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-display text-2xl font-bold">{entry.score}</div>
+                        <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-white/45">XP</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="glass-panel rounded-3xl p-5 md:p-6">
+                <div className="mb-4 flex items-center gap-2 text-xs font-mono uppercase tracking-[0.16em] text-white/50">
+                  <Target className="h-4 w-4" />
+                  Mission Tracker
+                </div>
+                <div className="space-y-4">
+                  {missionRows.map((mission) => {
+                    const progress = Math.min(100, Math.round((mission.value / Math.max(1, mission.target)) * 100));
+                    return (
+                      <div key={mission.title} className="rounded-xl border border-white/10 bg-black/30 p-3">
+                        <div className="mb-2 flex items-center justify-between text-[10px] font-mono uppercase tracking-[0.14em] text-white/55">
+                          <span>{mission.title}</span>
+                          <span>
+                            {mission.value}/{mission.target}
+                          </span>
+                        </div>
+                        <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                          <motion.div
+                            initial={false}
+                            animate={{ width: `${progress}%` }}
+                            transition={{ type: 'spring', stiffness: 170, damping: 24 }}
+                            className="h-full rounded-full bg-gradient-to-r from-emerald-300 via-cyan-300 to-sky-300"
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-6 rounded-xl border border-white/10 bg-black/30 p-4">
+                  <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-[0.14em] text-white/55">
+                    <Medal className="h-4 w-4" />
+                    Session Status
+                  </div>
+                  <div className="mt-2 text-sm text-white/70">
+                    {claimCompleted
+                      ? 'Gate claim confirmed. Keep burning and minting to climb the board.'
+                      : 'Complete gate claim first, then stack burns and mints for max XP.'}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        <AnimatePresence>
+          {isB2RCarouselOpen ? (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[88] flex items-center justify-center bg-black/75 px-4"
+              onClick={() => setIsB2RCarouselOpen(false)}
+            >
+              <motion.div
+                initial={{ opacity: 0, y: 20, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 16, scale: 0.98 }}
+                className="relative w-full max-w-6xl overflow-hidden rounded-3xl border border-white/20 bg-[radial-gradient(circle_at_20%_0%,rgba(34,211,238,0.14),transparent_40%),linear-gradient(150deg,rgba(13,13,15,0.98),rgba(4,4,5,0.98))] p-5 sm:p-6 md:p-7"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="absolute -left-12 top-0 h-40 w-40 rounded-full bg-cyan-300/20 blur-[90px]" />
+                <div className="absolute -right-12 bottom-0 h-40 w-40 rounded-full bg-white/10 blur-[90px]" />
+
+                <div className="relative">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-cyan-200/90">
+                        Burn Inventory Portal
+                      </div>
+                      <h3 className="mt-2 font-display text-3xl sm:text-4xl font-black uppercase tracking-tight">
+                        Burnable Inventory
+                      </h3>
+                      <p className="mt-2 max-w-2xl text-sm text-white/70">
+                        Browse your burnable NFTs in this live carousel. Click a card to open it directly in the burn queue.
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setIsB2RCarouselOpen(false)}
+                      className="rounded-xl border border-white/20 bg-black/40 p-2 text-white/80 hover:text-white"
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
+                  </div>
+
+                  <div className="mt-5 flex items-center justify-between gap-2">
+                    <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-white/45">
+                      {isInventoryLoading ? 'Syncing inventory...' : `${userNfts.length} burnable NFT(s)`}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => scrollB2RCarousel('right')}
+                        disabled={userNfts.length === 0}
+                        className="rounded-full border border-white/20 bg-black/40 p-2 text-white/75 hover:bg-white/10 disabled:opacity-40"
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => scrollB2RCarousel('left')}
+                        disabled={userNfts.length === 0}
+                        className="rounded-full border border-white/20 bg-black/40 p-2 text-white/75 hover:bg-white/10 disabled:opacity-40"
+                      >
+                        <ChevronRight className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {isInventoryLoading ? (
+                    <div className="mt-5 rounded-2xl border border-white/10 bg-black/40 p-8 text-center text-sm text-white/60">
+                      Syncing OpenSea inventory...
+                    </div>
+                  ) : userNfts.length === 0 ? (
+                    <div className="mt-5 rounded-2xl border border-white/10 bg-black/40 p-8 text-center text-sm text-white/60">
+                      No burnable NFTs found for this wallet.
+                    </div>
+                  ) : (
+                    <div
+                      ref={b2rCarouselScrollRef}
+                      dir="rtl"
+                      className="no-scrollbar mt-5 flex snap-x snap-mandatory gap-4 overflow-x-auto pb-2"
+                    >
+                      {userNfts.map((nft) => (
+                        <motion.button
+                          key={`b2r-carousel-${nft.id}`}
+                          whileHover={{ y: -6, scale: 1.01 }}
+                          whileTap={{ scale: 0.99 }}
+                          onClick={() => {
+                            setSelectedNft(nft);
+                            setActiveTab('nfts');
+                            setIsB2RCarouselOpen(false);
+                          }}
+                          dir="ltr"
+                          className="group relative min-w-[240px] sm:min-w-[280px] snap-start overflow-hidden rounded-2xl border border-white/15 bg-black/45 text-left"
+                        >
+                          <div className="aspect-square overflow-hidden border-b border-white/10 bg-neutral-950 p-3">
+                            {nft.image ? (
+                              <img
+                                src={nft.image}
+                                alt={nft.name}
+                                className="h-full w-full rounded-xl object-cover ring-1 ring-white/10 transition-transform duration-500 group-hover:scale-[1.04]"
+                                referrerPolicy="no-referrer"
+                              />
+                            ) : (
+                              <div className="flex h-full w-full items-center justify-center text-xs font-mono uppercase text-white/45">
+                                No Image
+                              </div>
+                            )}
+                          </div>
+                          <div className="p-4">
+                            <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-white/45">{nft.collection}</div>
+                            <div className="mt-1 font-display text-xl font-bold uppercase tracking-tight">{nft.name}</div>
+                            <div className="mt-3 flex items-center justify-between">
+                              <div className="text-xs font-mono uppercase text-white/65">x{nft.quantity || 1}</div>
+                              <div className="inline-flex items-center gap-2 text-xs font-mono uppercase text-cyan-200/85">
+                                <Flame className="h-3.5 w-3.5" /> +{nft.burnValue}
+                              </div>
+                            </div>
+                          </div>
+                        </motion.button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {isRewardsCarouselOpen ? (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[89] flex items-center justify-center bg-black/75 px-4"
+              onClick={() => setIsRewardsCarouselOpen(false)}
+            >
+              <motion.div
+                initial={{ opacity: 0, y: 20, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 16, scale: 0.98 }}
+                className="relative w-full max-w-6xl overflow-hidden rounded-3xl border border-white/20 bg-[radial-gradient(circle_at_78%_0%,rgba(250,204,21,0.16),transparent_45%),linear-gradient(150deg,rgba(14,14,16,0.98),rgba(4,4,5,0.98))] p-5 sm:p-6 md:p-7"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="absolute -left-12 top-0 h-40 w-40 rounded-full bg-amber-200/20 blur-[90px]" />
+                <div className="absolute -right-12 bottom-0 h-40 w-40 rounded-full bg-cyan-300/10 blur-[90px]" />
+
+                <div className="relative">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-amber-100/90">
+                        Reward Treasury Portal
+                      </div>
+                      <h3 className="mt-2 font-display text-3xl sm:text-4xl font-black uppercase tracking-tight">
+                        Reward Vault
+                      </h3>
+                      <p className="mt-2 max-w-2xl text-sm text-white/70">
+                        Wallet {shortAddress(REWARD_PREVIEW_WALLET)} holdings shown as a live carousel for redeemable rewards inventory.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          setActiveTab('rewards');
+                          setIsRewardsCarouselOpen(false);
+                        }}
+                        className="rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-[10px] font-mono uppercase tracking-[0.14em] text-white"
+                      >
+                        Open Rewards Tab
+                      </button>
+                      <button
+                        onClick={() => setIsRewardsCarouselOpen(false)}
+                        className="rounded-xl border border-white/20 bg-black/40 p-2 text-white/80 hover:text-white"
+                      >
+                        <X className="h-5 w-5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 flex items-center justify-between gap-2">
+                    <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-white/45">
+                      {isRewardPreviewLoading
+                        ? 'Syncing reward wallet...'
+                        : `${rewardPreviewNfts.length} NFT(s) in reward wallet`}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => scrollRewardsCarousel('right')}
+                        disabled={rewardPreviewNfts.length === 0}
+                        className="rounded-full border border-white/20 bg-black/40 p-2 text-white/75 hover:bg-white/10 disabled:opacity-40"
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => scrollRewardsCarousel('left')}
+                        disabled={rewardPreviewNfts.length === 0}
+                        className="rounded-full border border-white/20 bg-black/40 p-2 text-white/75 hover:bg-white/10 disabled:opacity-40"
+                      >
+                        <ChevronRight className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {isRewardPreviewLoading ? (
+                    <div className="mt-5 rounded-2xl border border-white/10 bg-black/40 p-8 text-center text-sm text-white/60">
+                      Loading reward wallet holdings...
+                    </div>
+                  ) : rewardPreviewError ? (
+                    <div className="mt-5 rounded-xl border border-red-700/60 bg-red-900/20 px-4 py-3 text-xs font-mono text-red-200">
+                      {rewardPreviewError}
+                    </div>
+                  ) : rewardPreviewNfts.length === 0 ? (
+                    <div className="mt-5 rounded-2xl border border-white/10 bg-black/40 p-8 text-center text-sm text-white/60">
+                      No reward NFTs found in this wallet.
+                    </div>
+                  ) : (
+                    <div
+                      ref={rewardsCarouselScrollRef}
+                      dir="rtl"
+                      className="no-scrollbar mt-5 flex snap-x snap-mandatory gap-4 overflow-x-auto pb-2"
+                    >
+                      {rewardPreviewNfts.map((nft, index) => (
+                        <motion.div
+                          key={`rewards-carousel-wallet-${nft.id}-${index}`}
+                          whileHover={{ y: -6, scale: 1.01 }}
+                          whileTap={{ scale: 0.99 }}
+                          dir="ltr"
+                          className="group relative min-w-[240px] sm:min-w-[280px] snap-start overflow-hidden rounded-2xl border border-white/15 bg-black/45 text-left"
+                        >
+                          <div className="aspect-square overflow-hidden border-b border-white/10 bg-neutral-950 p-3">
+                            {nft.image ? (
+                              <img
+                                src={nft.image}
+                                alt={nft.name}
+                                className="h-full w-full rounded-xl object-cover ring-1 ring-white/10 transition-transform duration-500 group-hover:scale-[1.04]"
+                                referrerPolicy="no-referrer"
+                              />
+                            ) : (
+                              <div className="flex h-full w-full items-center justify-center text-xs font-mono uppercase text-white/45">
+                                No Image
+                              </div>
+                            )}
+                          </div>
+                          <div className="p-4">
+                            <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-white/45">Reward Holding</div>
+                            <div className="mt-1 font-display text-xl font-bold uppercase tracking-tight">
+                              {nft.name || `Token #${nft.tokenId || '0'}`}
+                            </div>
+                            <div className="mt-2 text-xs font-mono uppercase text-white/65">
+                              {nft.collection} #{nft.tokenId || '0'}
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <div className="rounded-lg border border-white/20 px-3 py-1.5 text-[10px] font-mono uppercase tracking-[0.14em] text-white/80">
+                                Qty x{nft.quantity || 1}
+                              </div>
+                              <div className="rounded-lg border border-cyan-300/40 bg-cyan-300/10 px-3 py-1.5 text-[10px] font-mono uppercase tracking-[0.14em] text-cyan-200">
+                                +{nft.burnValue} Credits
+                              </div>
+                            </div>
+                          </div>
+                        </motion.div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {isClaimPopupOpen ? (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[90] flex items-center justify-center bg-black/70 px-4"
+            >
+              <motion.div
+                initial={{ opacity: 0, y: 20, scale: 0.97 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 20, scale: 0.97 }}
+                className="relative w-full max-w-xl overflow-hidden rounded-3xl border border-white/20 bg-neutral-950 p-6 sm:p-7"
+              >
+                <div className="absolute inset-0 pointer-events-none">
+                  <div className="absolute -left-16 -top-12 h-40 w-40 rounded-full bg-cyan-400/20 blur-3xl" />
+                  <div className="absolute -right-14 -bottom-12 h-44 w-44 rounded-full bg-indigo-400/20 blur-3xl" />
+                  {CLAIM_PARTICLES.map((particle) => (
+                    <motion.div
+                      key={`${particle.left}-${particle.top}`}
+                      className="absolute h-1.5 w-1.5 rounded-full bg-cyan-200/80"
+                      style={{ left: particle.left, top: particle.top }}
+                      animate={{ y: [0, -8, 0], opacity: [0.4, 1, 0.4], scale: [1, 1.2, 1] }}
+                      transition={{ duration: 2.2, repeat: Infinity, delay: particle.delay }}
+                    />
+                  ))}
+                </div>
+
+                <div className="relative">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-cyan-200/85">
+                        Claim Ritual
+                      </div>
+                      <h3 className="mt-2 font-display text-3xl font-black uppercase tracking-tight">
+                        {claimPopupState === 'success'
+                          ? 'Rewards unlocked'
+                          : claimPopupState === 'error'
+                            ? 'Claim interrupted'
+                            : claimPopupState === 'wallet'
+                              ? 'Sign in wallet'
+                              : 'Processing claim'}
+                      </h3>
+                    </div>
+                    <motion.div
+                      animate={claimPopupState === 'success' || claimPopupState === 'error' ? { rotate: 0 } : { rotate: 360 }}
+                      transition={
+                        claimPopupState === 'success' || claimPopupState === 'error'
+                          ? { duration: 0.2 }
+                          : { duration: 1.4, repeat: Infinity, ease: 'linear' }
+                      }
+                      className={`flex h-12 w-12 items-center justify-center rounded-full border ${
+                        claimPopupState === 'success'
+                          ? 'border-emerald-300/60 bg-emerald-500/20'
+                          : claimPopupState === 'error'
+                            ? 'border-red-400/50 bg-red-500/20'
+                            : 'border-cyan-300/50 bg-cyan-400/20'
+                      }`}
+                    >
+                      {claimPopupState === 'success' ? (
+                        <Check className="h-6 w-6 text-emerald-200" />
+                      ) : claimPopupState === 'error' ? (
+                        <X className="h-6 w-6 text-red-200" />
+                      ) : (
+                        <Sparkles className="h-6 w-6 text-cyan-100" />
+                      )}
+                    </motion.div>
+                  </div>
+
+                  <div className="mt-5">
+                    <div className="mb-2 flex items-center justify-between text-[10px] font-mono uppercase tracking-[0.14em] text-white/55">
+                      <span>Progress</span>
+                      <span>{claimPopupProgress}%</span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                      <motion.div
+                        className={`h-full rounded-full ${
+                          claimPopupState === 'error'
+                            ? 'bg-gradient-to-r from-red-500 to-rose-400'
+                            : 'bg-gradient-to-r from-cyan-400 via-sky-300 to-indigo-300'
+                        }`}
+                        initial={false}
+                        animate={{ width: `${claimPopupProgress}%` }}
+                        transition={{ type: 'spring', stiffness: 170, damping: 24 }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="mt-5 space-y-2">
+                    {CLAIM_RITUAL_STEPS.map((step, index) => {
+                      const isDone = claimPopupState === 'success' || index < claimPopupStep;
+                      const isActive = claimPopupState !== 'success' && claimPopupState !== 'error' && index === claimPopupStep;
+                      return (
+                        <div
+                          key={step.label}
+                          className={`flex items-center justify-between rounded-xl border px-3 py-2 ${
+                            isDone
+                              ? 'border-cyan-200/35 bg-cyan-300/10'
+                              : isActive
+                                ? 'border-cyan-300/45 bg-cyan-300/10'
+                                : 'border-white/10 bg-black/25'
+                          }`}
+                        >
+                          <div>
+                            <div className="text-xs font-mono uppercase tracking-[0.14em] text-white/85">{step.label}</div>
+                            <div className="mt-0.5 text-[10px] font-mono uppercase tracking-[0.12em] text-white/45">{step.hint}</div>
+                          </div>
+                          <div
+                            className={`h-2.5 w-2.5 rounded-full ${
+                              isDone ? 'bg-cyan-200 shadow-[0_0_16px_rgba(125,211,252,0.85)]' : isActive ? 'bg-cyan-300' : 'bg-white/20'
+                            }`}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {claimPopupState === 'error' ? (
+                    <div className="mt-4 rounded-xl border border-red-500/40 bg-red-900/20 px-3 py-2 text-sm text-red-200">
+                      {claimPopupError || 'Claim failed. Try again.'}
+                    </div>
+                  ) : null}
+
+                  {claimPopupState === 'success' ? (
+                    <div className="mt-4 rounded-xl border border-emerald-400/40 bg-emerald-900/15 px-3 py-2 text-sm text-emerald-200">
+                      Rewards claimed successfully.
+                      {claimPopupTxHash ? (
+                        <a
+                          href={`https://basescan.org/tx/${claimPopupTxHash}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="ml-2 underline underline-offset-2"
+                        >
+                          View tx
+                        </a>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  <div className="mt-6 flex justify-end">
+                    <button
+                      onClick={closeClaimPopup}
+                      disabled={isClaimSigning && claimPopupState !== 'error'}
+                      className="rounded-lg border border-white/20 bg-black/50 px-4 py-2 text-xs font-mono uppercase tracking-[0.14em] text-white/80 disabled:opacity-40"
+                    >
+                      {claimPopupState === 'success' ? 'Continue' : 'Close'}
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
       </main>
+      <SiteFooter />
     </div>
   );
 }
@@ -1055,7 +3462,7 @@ export default function App() {
     }
   }
 
-  async function handleClaimSignature() {
+  async function handleClaimSignature(): Promise<ClaimResponse> {
     setError('');
     setIsClaimSigning(true);
 
@@ -1093,9 +3500,11 @@ export default function App() {
 
       setClaimResponse(body);
       setEntryMode('claim');
+      return body;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Claim signature failed';
       setError(message);
+      throw err instanceof Error ? err : new Error(message);
     } finally {
       setIsClaimSigning(false);
     }
@@ -1127,9 +3536,9 @@ export default function App() {
         <div className="scanline" />
       </div>
 
-      <main className="relative z-10 min-h-screen flex items-center justify-center px-6 py-16">
+      <main className="relative z-10 min-h-screen flex items-center justify-center px-4 sm:px-6 py-10 sm:py-14 md:py-16">
         <div className="w-full max-w-3xl">
-          <div className="glass-panel rounded-3xl p-10 md:p-14">
+          <div className="glass-panel rounded-3xl p-7 sm:p-10 md:p-14">
             <div className="flex items-center gap-3 mb-8">
               <div className="w-11 h-11 bg-white text-black rounded-sm flex items-center justify-center">
                 <LockKeyhole className="w-6 h-6" />
@@ -1187,6 +3596,7 @@ export default function App() {
           </div>
         </div>
       </main>
+      <SiteFooter />
     </div>
   );
 }

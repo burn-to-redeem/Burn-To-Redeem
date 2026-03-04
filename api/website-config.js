@@ -31,7 +31,7 @@ export default async function handler(req, res) {
         ),
         burnHeroSubtitle: clean(
           runtime.websiteBurnHeroSubtitle,
-          'Burn your claimed rewards to stack credits and redeem premium drops.'
+          'Burn your claimed rewards to stack game credits and redeem new digital art.'
         ),
         nftsTabLabel: clean(runtime.websiteNftsTabLabel, 'NFTS TO BURN'),
         rewardsTabLabel: clean(runtime.websiteRewardsTabLabel, 'REDEEMABLE REWARDS'),

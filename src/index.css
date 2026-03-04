@@ -38,3 +38,12 @@
   0% { bottom: 100%; }
   100% { bottom: -100px; }
 }
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

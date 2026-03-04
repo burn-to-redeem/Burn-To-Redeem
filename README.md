@@ -7,6 +7,12 @@ This app uses a gated-entry + manual-claim flow:
 3. In the `Redeemable Rewards` tab, wallet signs a claim message (`/api/claim-reward`) when ready to claim.
 4. Backend verifies signature + token-gate ownership, then transfers a random ERC-1155 reward batch from treasury wallet to claimant.
 
+Burn rewards can also run in mutable mint mode:
+
+1. User burns NFT(s) (directly to dead address or through `MultiCollectionBurnRouter`).
+2. Backend verifies on-chain burn logs.
+3. Backend rolls random CID wins (`BURN_REWARD_CID_1..5`) and mints them into one mutable ERC-721 contract (`MutableCidRewardCollection`).
+
 ## Environment variables
 
 Copy from `.env.example` and set real values in Vercel Project Settings.
@@ -44,6 +50,10 @@ Required:
 - `REWARD_TX_RETRY_ATTEMPTS`
 - `REWARD_TX_RETRY_WAIT_MS`
 - `REWARD_RETRY_FEE_BUMP_BPS`
+- `BURN_ROUTER_CONTRACT` (optional; if set, burn txs routed through this contract are accepted and parsed via `BurnRecorded`)
+- `BURN_ALLOWED_COLLECTIONS` (optional comma/newline-separated contract allowlist for direct burn tx verification)
+- `REWARD_MUTABLE_NFT_CONTRACT` (optional mutable ERC-721 contract used to mint CID burn rewards)
+- `REWARD_MINT_ENABLED` (`1`/`0`; enable or disable mutable reward minting from backend)
 - `BURN_REWARD_CID_1` ... `BURN_REWARD_CID_5` (up to 5 CID prizes for random post-burn drops)
 - `ADMIN_PASSWORD`
 - `ADMIN_SESSION_SECRET`
@@ -55,6 +65,7 @@ Required:
 
 - Keep `TREASURY_PRIVATE_KEY` server-side only.
 - Use a dedicated treasury wallet with limited funds.
+- For mutable burn rewards, grant this wallet minter permission on `MutableCidRewardCollection`.
 - For high-value rewards, the best long-term design is an on-chain claim registry/distributor contract that tracks per-wallet claim usage against gated balance.
 - `safeBatchTransferFrom` is used (one tx) and low-gas EIP-1559 overrides are applied when `REWARD_GAS_MODE=lowest`.
 - If a tx remains pending, retries reuse the same nonce with a fee bump for replacement until confirmation.
@@ -93,6 +104,20 @@ npm run dev
 ## Deploy
 
 Deploy to Vercel and set env vars in the project dashboard.
+
+## Contract deployment (Base)
+
+From project root (`/Users/pierre/Documents/New project`), deploy the new burn + mutable reward contracts:
+
+```bash
+npm run deploy:burn-reward-stack:base
+```
+
+Optional env for deployment:
+- `BURN_SOURCE_COLLECTIONS` (comma-separated contracts)
+- `BURN_SOURCE_TOKEN_STANDARDS` (`1` ERC-721 / `2` ERC-1155)
+- `BURN_SOURCE_USE_BURN_FUNCTION` (`true/false` list)
+- `REWARD_MUTABLE_MINTERS` (comma-separated addresses to grant minter role)
 
 ## Burn inventory gallery
 
