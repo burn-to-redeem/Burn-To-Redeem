@@ -78,8 +78,10 @@ async function readStore() {
 }
 
 function buildRuntimeFromConfig(config, overrides, updatedAt) {
+  const trimmedBaseRpcUrl = String(config.BASE_RPC_URL || '').trim();
+
   return {
-    baseRpcUrl: config.BASE_RPC_URL,
+    baseRpcUrl: trimmedBaseRpcUrl || 'https://mainnet.base.org',
     chainId: parsePositiveInt(config.CHAIN_ID, 8453),
     tokenGateContract: config.TOKEN_GATE_CONTRACT,
     tokenGateStandard: config.TOKEN_GATE_STANDARD,
