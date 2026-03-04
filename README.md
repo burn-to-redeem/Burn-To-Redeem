@@ -21,12 +21,17 @@ Required:
 - `REWARD_ERC1155_CONTRACT`
 - `REWARD_ERC1155_TOKEN_IDS`
 - `REWARD_NFTS_PER_CLAIM` (set to `20` for the current reward policy)
+- `REWARD_GAS_MODE` (`lowest` recommended)
+- `REWARD_MIN_PRIORITY_GWEI`
+- `REWARD_BASE_FEE_MULTIPLIER_BPS`
+- `REWARD_GAS_PRICE_MULTIPLIER_BPS`
 
 ## Security notes
 
 - Keep `TREASURY_PRIVATE_KEY` server-side only.
 - Use a dedicated treasury wallet with limited funds.
 - For high-value rewards, move to contract-based allowlists/nonces and persistent claim tracking.
+- `safeBatchTransferFrom` is used (one tx) and low-gas EIP-1559 overrides are applied when `REWARD_GAS_MODE=lowest`.
 
 ## Local development
 

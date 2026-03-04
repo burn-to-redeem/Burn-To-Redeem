@@ -22,6 +22,43 @@ function requireEnv(name) {
   return value;
 }
 
+function parsePositiveInt(value, fallback) {
+  const parsed = Number.parseInt(String(value || ''), 10);
+  if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  return fallback;
+}
+
+function parseGweiToWei(value, fallbackGwei) {
+  const raw = String(value || fallbackGwei).trim();
+  return ethers.parseUnits(raw, 'gwei');
+}
+
+async function buildLowGasOverrides(provider) {
+  const mode = String(process.env.REWARD_GAS_MODE || 'lowest').trim().toLowerCase();
+  if (mode !== 'lowest') return {};
+
+  const feeData = await provider.getFeeData();
+  const minPriorityFeePerGas = parseGweiToWei(process.env.REWARD_MIN_PRIORITY_GWEI, '0.000001');
+  const baseFeeMultiplierBps = parsePositiveInt(process.env.REWARD_BASE_FEE_MULTIPLIER_BPS, 10000);
+  const gasPriceMultiplierBps = parsePositiveInt(process.env.REWARD_GAS_PRICE_MULTIPLIER_BPS, 10000);
+  const overrides = {};
+
+  if (feeData.lastBaseFeePerGas !== null && feeData.lastBaseFeePerGas !== undefined) {
+    const scaledBaseFee = (feeData.lastBaseFeePerGas * BigInt(baseFeeMultiplierBps)) / 10000n;
+    overrides.maxPriorityFeePerGas = minPriorityFeePerGas;
+    overrides.maxFeePerGas = scaledBaseFee + minPriorityFeePerGas;
+  } else if (feeData.gasPrice !== null && feeData.gasPrice !== undefined) {
+    overrides.gasPrice = (feeData.gasPrice * BigInt(gasPriceMultiplierBps)) / 10000n;
+  }
+
+  const configuredGasLimit = Number.parseInt(String(process.env.REWARD_GAS_LIMIT || ''), 10);
+  if (Number.isInteger(configuredGasLimit) && configuredGasLimit > 0) {
+    overrides.gasLimit = configuredGasLimit;
+  }
+
+  return overrides;
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -101,13 +138,15 @@ export default async function handler(req, res) {
       getErc1155TransferAbi(),
       treasurySigner
     );
+    const txOverrides = await buildLowGasOverrides(provider);
 
     const tx = await rewardContract.safeBatchTransferFrom(
       treasuryAddress,
       address,
       transferIds,
       transferAmounts,
-      '0x'
+      '0x',
+      txOverrides
     );
     const receipt = await tx.wait();
 
