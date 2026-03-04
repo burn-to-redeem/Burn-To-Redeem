@@ -16,7 +16,8 @@ const ERC721_GATE_ABI = ['function balanceOf(address owner) view returns (uint25
 const ERC1155_GATE_ABI = ['function balanceOf(address account, uint256 id) view returns (uint256)'];
 const ERC1155_TRANSFER_ABI = [
   'function balanceOf(address account, uint256 id) view returns (uint256)',
-  'function safeTransferFrom(address from, address to, uint256 id, uint256 value, bytes data)'
+  'function safeTransferFrom(address from, address to, uint256 id, uint256 value, bytes data)',
+  'function safeBatchTransferFrom(address from, address to, uint256[] ids, uint256[] values, bytes data)'
 ];
 
 async function safeBalanceOf(contract, address, tokenId) {
@@ -171,11 +172,33 @@ export function parseRewardTokenIds(rawIds) {
     .map((value) => BigInt(value));
 }
 
-export async function pickRandomRewardTokenId({ provider, rewardContractAddress, treasuryAddress, tokenIds }) {
+function randomBigIntBelow(maxExclusive) {
+  if (maxExclusive <= 0n) {
+    throw new Error('maxExclusive must be greater than 0.');
+  }
+
+  const bits = maxExclusive.toString(2).length;
+  const bytes = Math.ceil(bits / 8);
+
+  while (true) {
+    const randomHex = crypto.randomBytes(bytes).toString('hex') || '0';
+    const candidate = BigInt(`0x${randomHex}`);
+    if (candidate < maxExclusive) return candidate;
+  }
+}
+
+export async function pickRandomRewardAllocations({
+  provider,
+  rewardContractAddress,
+  treasuryAddress,
+  tokenIds,
+  rewardCount
+}) {
   const rewardContract = new ethers.Contract(rewardContractAddress, ERC1155_TRANSFER_ABI, provider);
 
   const available = [];
   let revertedIds = 0;
+
   for (const tokenId of tokenIds) {
     const balance = await safeBalanceOf(rewardContract, treasuryAddress, tokenId);
     if (balance === null) {
@@ -187,16 +210,58 @@ export async function pickRandomRewardTokenId({ provider, rewardContractAddress,
     }
   }
 
-  if (available.length === 0) {
+  if (available.length === 0 || rewardCount <= 0) {
     if (revertedIds === tokenIds.length) {
       throw new Error('All configured reward token IDs reverted on balanceOf. Verify ERC-1155 contract and token IDs.');
     }
     throw new Error('Treasury wallet has zero balance for configured reward token IDs.');
   }
 
-  const randomBytes = crypto.randomBytes(4);
-  const randomIndex = randomBytes.readUInt32BE(0) % available.length;
-  return available[randomIndex].tokenId;
+  let totalUnits = 0n;
+  for (const entry of available) {
+    totalUnits += entry.balance;
+  }
+
+  const requiredUnits = BigInt(rewardCount);
+  if (totalUnits < requiredUnits) {
+    throw new Error(`Not enough treasury rewards. Requested ${rewardCount}, available ${totalUnits.toString()}.`);
+  }
+
+  const selected = new Map();
+  let remainingUnits = totalUnits;
+
+  for (let i = 0; i < rewardCount; i += 1) {
+    const target = randomBigIntBelow(remainingUnits);
+    let cursor = 0n;
+    let chosenIndex = -1;
+
+    for (let idx = 0; idx < available.length; idx += 1) {
+      cursor += available[idx].balance;
+      if (target < cursor) {
+        chosenIndex = idx;
+        break;
+      }
+    }
+
+    if (chosenIndex === -1) {
+      throw new Error('Failed to select random reward token.');
+    }
+
+    const chosen = available[chosenIndex];
+    const key = chosen.tokenId.toString();
+    selected.set(key, (selected.get(key) || 0n) + 1n);
+
+    chosen.balance -= 1n;
+    if (chosen.balance <= 0n) {
+      available.splice(chosenIndex, 1);
+    }
+    remainingUnits -= 1n;
+  }
+
+  return Array.from(selected.entries()).map(([tokenId, amount]) => ({
+    tokenId: BigInt(tokenId),
+    amount
+  }));
 }
 
 export function getErc1155TransferAbi() {

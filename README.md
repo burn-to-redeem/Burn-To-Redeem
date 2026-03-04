@@ -1,10 +1,11 @@
-# Burn to Redeem Reward Claims
+# Burn to Redeem Reward Claims + Website Access
 
 This app uses a two-signature flow:
 
 1. Wallet signs a token-gate message (`/api/auth-gate`).
 2. Wallet signs a claim message (`/api/claim-reward`).
-3. Backend verifies both signatures and token-gate ownership, then transfers a random ERC-1155 token from treasury wallet to claimant.
+3. Backend verifies both signatures and token-gate ownership, then transfers a random ERC-1155 reward batch from treasury wallet to claimant.
+4. User is routed into the burn website experience and can burn claimed rewards.
 
 ## Environment variables
 
@@ -19,6 +20,7 @@ Required:
 - `TREASURY_PRIVATE_KEY`
 - `REWARD_ERC1155_CONTRACT`
 - `REWARD_ERC1155_TOKEN_IDS`
+- `REWARD_NFTS_PER_CLAIM` (set to `20` for the current reward policy)
 
 ## Security notes
 

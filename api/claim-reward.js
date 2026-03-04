@@ -10,7 +10,7 @@ import {
   normalizeAddress,
   parseJsonBody,
   parseRewardTokenIds,
-  pickRandomRewardTokenId,
+  pickRandomRewardAllocations,
   verifyGatePass
 } from './_lib/claimUtils.js';
 
@@ -67,10 +67,10 @@ export default async function handler(req, res) {
     const treasuryPrivateKey = requireEnv('TREASURY_PRIVATE_KEY');
     const rewardContractAddress = normalizeAddress(requireEnv('REWARD_ERC1155_CONTRACT'));
     const rewardTokenIds = parseRewardTokenIds(requireEnv('REWARD_ERC1155_TOKEN_IDS'));
-    const rewardAmount = BigInt(Number.parseInt(process.env.REWARD_AMOUNT_PER_CLAIM || '1', 10));
+    const rewardNftsPerClaim = Number.parseInt(process.env.REWARD_NFTS_PER_CLAIM || '20', 10);
 
-    if (rewardAmount <= 0n) {
-      return res.status(400).json({ ok: false, error: 'REWARD_AMOUNT_PER_CLAIM must be > 0' });
+    if (!Number.isInteger(rewardNftsPerClaim) || rewardNftsPerClaim <= 0) {
+      return res.status(400).json({ ok: false, error: 'REWARD_NFTS_PER_CLAIM must be a positive integer.' });
     }
 
     if (rewardTokenIds.length === 0) {
@@ -85,12 +85,16 @@ export default async function handler(req, res) {
       return res.status(500).json({ ok: false, error: 'TREASURY_WALLET_ADDRESS does not match TREASURY_PRIVATE_KEY.' });
     }
 
-    const tokenId = await pickRandomRewardTokenId({
+    const allocations = await pickRandomRewardAllocations({
       provider,
       rewardContractAddress,
       treasuryAddress,
-      tokenIds: rewardTokenIds
+      tokenIds: rewardTokenIds,
+      rewardCount: rewardNftsPerClaim
     });
+
+    const transferIds = allocations.map((entry) => entry.tokenId);
+    const transferAmounts = allocations.map((entry) => entry.amount);
 
     const rewardContract = new ethers.Contract(
       rewardContractAddress,
@@ -98,11 +102,11 @@ export default async function handler(req, res) {
       treasurySigner
     );
 
-    const tx = await rewardContract.safeTransferFrom(
+    const tx = await rewardContract.safeBatchTransferFrom(
       treasuryAddress,
       address,
-      tokenId,
-      rewardAmount,
+      transferIds,
+      transferAmounts,
       '0x'
     );
     const receipt = await tx.wait();
@@ -112,8 +116,11 @@ export default async function handler(req, res) {
       txHash: tx.hash,
       blockNumber: receipt?.blockNumber ?? null,
       rewardContract: rewardContractAddress,
-      rewardTokenId: tokenId.toString(),
-      rewardAmount: rewardAmount.toString(),
+      rewardNftsPerClaim,
+      allocations: allocations.map((entry) => ({
+        tokenId: entry.tokenId.toString(),
+        amount: entry.amount.toString()
+      })),
       from: treasuryAddress,
       to: address
     });
