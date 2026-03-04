@@ -4,6 +4,9 @@ const OVERRIDE_PATH = '/tmp/burn-to-redeem-runtime-overrides.json';
 
 export const EDITABLE_OVERRIDE_KEYS = [
   'BASE_RPC_URL',
+  'BASE_RPC_FALLBACK_URLS',
+  'RPC_LOG_RETRY_ATTEMPTS',
+  'RPC_LOG_RETRY_DELAY_MS',
   'CHAIN_ID',
   'TOKEN_GATE_CONTRACT',
   'TOKEN_GATE_STANDARD',
@@ -49,6 +52,9 @@ export const EDITABLE_OVERRIDE_KEYS = [
 
 const DEFAULT_EDITABLE_CONFIG = {
   BASE_RPC_URL: process.env.BASE_RPC_URL || 'https://mainnet.base.org',
+  BASE_RPC_FALLBACK_URLS: process.env.BASE_RPC_FALLBACK_URLS || '',
+  RPC_LOG_RETRY_ATTEMPTS: process.env.RPC_LOG_RETRY_ATTEMPTS || '4',
+  RPC_LOG_RETRY_DELAY_MS: process.env.RPC_LOG_RETRY_DELAY_MS || '350',
   CHAIN_ID: process.env.CHAIN_ID || '8453',
   TOKEN_GATE_CONTRACT: process.env.TOKEN_GATE_CONTRACT || '',
   TOKEN_GATE_STANDARD: process.env.TOKEN_GATE_STANDARD || 'erc721',
@@ -119,6 +125,9 @@ function buildRuntimeFromConfig(config, overrides, updatedAt) {
 
   return {
     baseRpcUrl: trimmedBaseRpcUrl || 'https://mainnet.base.org',
+    baseRpcFallbackUrls: config.BASE_RPC_FALLBACK_URLS,
+    rpcLogRetryAttempts: parsePositiveInt(config.RPC_LOG_RETRY_ATTEMPTS, 4),
+    rpcLogRetryDelayMs: parsePositiveInt(config.RPC_LOG_RETRY_DELAY_MS, 350),
     chainId: parsePositiveInt(config.CHAIN_ID, 8453),
     tokenGateContract: config.TOKEN_GATE_CONTRACT,
     tokenGateStandard: config.TOKEN_GATE_STANDARD,

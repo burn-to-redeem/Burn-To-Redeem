@@ -45,6 +45,114 @@ function parseGweiToWei(value, fallbackGwei) {
   return ethers.parseUnits(raw, 'gwei');
 }
 
+function parseRpcUrls(value) {
+  const parts = String(value || '')
+    .split(/[\n,\s]+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  const seen = new Set();
+  const urls = [];
+  for (const entry of parts) {
+    if (seen.has(entry)) continue;
+    seen.add(entry);
+    urls.push(entry);
+  }
+
+  return urls;
+}
+
+function buildRpcProviderPool(runtime) {
+  const urls = [];
+  const primary = String(runtime.baseRpcUrl || '').trim() || 'https://mainnet.base.org';
+  urls.push(primary);
+
+  for (const fallback of parseRpcUrls(runtime.baseRpcFallbackUrls)) {
+    if (!urls.includes(fallback)) {
+      urls.push(fallback);
+    }
+  }
+
+  return urls.map((url) => ({ url, provider: new ethers.JsonRpcProvider(url) }));
+}
+
+function isRpcLogRetryable(error) {
+  const code = String(error?.code || '').toUpperCase();
+  const nestedCode = Number(error?.error?.code ?? error?.info?.error?.code ?? NaN);
+  const text = [
+    error?.message,
+    error?.shortMessage,
+    error?.reason,
+    error?.error?.message,
+    error?.info?.error?.message
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  if (nestedCode === -32011) return true;
+  if (
+    code === 'UNKNOWN_ERROR' ||
+    code === 'SERVER_ERROR' ||
+    code === 'NETWORK_ERROR' ||
+    code === 'TIMEOUT'
+  ) {
+    return true;
+  }
+
+  return (
+    text.includes('no backend is currently healthy') ||
+    text.includes('could not coalesce error') ||
+    text.includes('timeout') ||
+    text.includes('timed out') ||
+    text.includes('temporarily unavailable') ||
+    text.includes('service unavailable') ||
+    text.includes('gateway timeout') ||
+    text.includes('too many requests') ||
+    text.includes('rate limit') ||
+    text.includes('econnreset') ||
+    text.includes('etimedout') ||
+    text.includes('socket hang up')
+  );
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withRpcLogFailover({ rpcProviders, runtime, operation, run }) {
+  const providers =
+    Array.isArray(rpcProviders) && rpcProviders.length > 0
+      ? rpcProviders
+      : buildRpcProviderPool(runtime || {});
+  const retriesPerProvider = parsePositiveInt(runtime?.rpcLogRetryAttempts, 4);
+  const delayMs = parsePositiveInt(runtime?.rpcLogRetryDelayMs, 350);
+  const totalAttempts = Math.max(1, retriesPerProvider) * providers.length;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
+    const providerEntry = providers[(attempt - 1) % providers.length];
+    try {
+      return await run(providerEntry.provider);
+    } catch (error) {
+      lastError = error;
+      const retryable = isRpcLogRetryable(error);
+      if (!retryable || attempt >= totalAttempts) {
+        break;
+      }
+      if (delayMs > 0) {
+        await sleep(delayMs);
+      }
+    }
+  }
+
+  const reason =
+    lastError instanceof Error ? lastError.message : String(lastError || 'Unknown RPC error');
+  throw new Error(
+    `${operation} failed after ${totalAttempts} attempts across ${providers.length} RPC endpoint(s): ${reason}`
+  );
+}
+
 async function buildLowGasOverrides(provider, runtime) {
   const mode = String(runtime.rewardGasMode || 'lowest').trim().toLowerCase();
   if (mode !== 'lowest') return {};
@@ -92,6 +200,7 @@ const ERC1155_LOG_INTERFACE = new ethers.Interface([
   'event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)',
   'event TransferBatch(address indexed operator, address indexed from, address indexed to, uint256[] ids, uint256[] values)'
 ]);
+const ERC1155_BALANCE_OF_ABI = ['function balanceOf(address account, uint256 id) view returns (uint256)'];
 
 function dedupeBigIntValues(values) {
   const seen = new Set();
@@ -110,14 +219,20 @@ function sortBigIntValues(values) {
 }
 
 async function discoverRewardTokenIdsFromTreasuryLogs({
-  provider,
+  rpcProviders,
+  runtime,
   rewardContractAddress,
   treasuryAddress,
   startBlock,
   step,
   maxCandidateIds
 }) {
-  const latestBlock = await provider.getBlockNumber();
+  const latestBlock = await withRpcLogFailover({
+    rpcProviders,
+    runtime,
+    operation: 'Reward token discovery latest block fetch',
+    run: (provider) => provider.getBlockNumber()
+  });
   if (startBlock <= 0 || startBlock > latestBlock) {
     return [];
   }
@@ -132,29 +247,53 @@ async function discoverRewardTokenIdsFromTreasuryLogs({
     const to = Math.min(from + step - 1, latestBlock);
 
     const logGroups = await Promise.all([
-      provider.getLogs({
-        address: rewardContractAddress,
-        fromBlock: from,
-        toBlock: to,
-        topics: [transferSingleTopic, null, treasuryTopic]
+      withRpcLogFailover({
+        rpcProviders,
+        runtime,
+        operation: `Reward token discovery TransferSingle out logs (${from}-${to})`,
+        run: (provider) =>
+          provider.getLogs({
+            address: rewardContractAddress,
+            fromBlock: from,
+            toBlock: to,
+            topics: [transferSingleTopic, null, treasuryTopic]
+          })
       }),
-      provider.getLogs({
-        address: rewardContractAddress,
-        fromBlock: from,
-        toBlock: to,
-        topics: [transferSingleTopic, null, null, treasuryTopic]
+      withRpcLogFailover({
+        rpcProviders,
+        runtime,
+        operation: `Reward token discovery TransferSingle in logs (${from}-${to})`,
+        run: (provider) =>
+          provider.getLogs({
+            address: rewardContractAddress,
+            fromBlock: from,
+            toBlock: to,
+            topics: [transferSingleTopic, null, null, treasuryTopic]
+          })
       }),
-      provider.getLogs({
-        address: rewardContractAddress,
-        fromBlock: from,
-        toBlock: to,
-        topics: [transferBatchTopic, null, treasuryTopic]
+      withRpcLogFailover({
+        rpcProviders,
+        runtime,
+        operation: `Reward token discovery TransferBatch out logs (${from}-${to})`,
+        run: (provider) =>
+          provider.getLogs({
+            address: rewardContractAddress,
+            fromBlock: from,
+            toBlock: to,
+            topics: [transferBatchTopic, null, treasuryTopic]
+          })
       }),
-      provider.getLogs({
-        address: rewardContractAddress,
-        fromBlock: from,
-        toBlock: to,
-        topics: [transferBatchTopic, null, null, treasuryTopic]
+      withRpcLogFailover({
+        rpcProviders,
+        runtime,
+        operation: `Reward token discovery TransferBatch in logs (${from}-${to})`,
+        run: (provider) =>
+          provider.getLogs({
+            address: rewardContractAddress,
+            fromBlock: from,
+            toBlock: to,
+            topics: [transferBatchTopic, null, null, treasuryTopic]
+          })
       })
     ]);
 
@@ -186,16 +325,22 @@ async function discoverRewardTokenIdsFromTreasuryLogs({
     return [];
   }
 
-  const rewardContract = new ethers.Contract(
-    rewardContractAddress,
-    ['function balanceOf(address account, uint256 id) view returns (uint256)'],
-    provider
-  );
-
   const sortedCandidates = sortBigIntValues(Array.from(candidateIds, (value) => BigInt(value)));
   const positiveBalanceIds = [];
   for (const tokenId of sortedCandidates) {
-    const balance = await rewardContract.balanceOf(treasuryAddress, tokenId);
+    const balance = await withRpcLogFailover({
+      rpcProviders,
+      runtime,
+      operation: `Reward token discovery treasury balance check for token ${tokenId.toString()}`,
+      run: (provider) => {
+        const rewardContract = new ethers.Contract(
+          rewardContractAddress,
+          ERC1155_BALANCE_OF_ABI,
+          provider
+        );
+        return rewardContract.balanceOf(treasuryAddress, tokenId);
+      }
+    });
     if (balance > 0n) {
       positiveBalanceIds.push(tokenId);
     }
@@ -205,14 +350,20 @@ async function discoverRewardTokenIdsFromTreasuryLogs({
 }
 
 async function countWalletClaimsFromLogs({
-  provider,
+  rpcProviders,
+  runtime,
   rewardContractAddress,
   treasuryAddress,
   walletAddress,
   startBlock,
   step
 }) {
-  const latestBlock = await provider.getBlockNumber();
+  const latestBlock = await withRpcLogFailover({
+    rpcProviders,
+    runtime,
+    operation: 'Claim count latest block fetch',
+    run: (provider) => provider.getBlockNumber()
+  });
   if (startBlock <= 0 || startBlock > latestBlock) {
     return 0;
   }
@@ -225,18 +376,32 @@ async function countWalletClaimsFromLogs({
   let count = 0;
   for (let from = startBlock; from <= latestBlock; from += step) {
     const to = Math.min(from + step - 1, latestBlock);
-    const batchLogs = await provider.getLogs({
-      address: rewardContractAddress,
-      fromBlock: from,
-      toBlock: to,
-      topics: [transferBatchTopic, null, fromTopic, toTopic]
-    });
-    const singleLogs = await provider.getLogs({
-      address: rewardContractAddress,
-      fromBlock: from,
-      toBlock: to,
-      topics: [transferSingleTopic, null, fromTopic, toTopic]
-    });
+    const [batchLogs, singleLogs] = await Promise.all([
+      withRpcLogFailover({
+        rpcProviders,
+        runtime,
+        operation: `Claim count TransferBatch logs (${from}-${to})`,
+        run: (provider) =>
+          provider.getLogs({
+            address: rewardContractAddress,
+            fromBlock: from,
+            toBlock: to,
+            topics: [transferBatchTopic, null, fromTopic, toTopic]
+          })
+      }),
+      withRpcLogFailover({
+        rpcProviders,
+        runtime,
+        operation: `Claim count TransferSingle logs (${from}-${to})`,
+        run: (provider) =>
+          provider.getLogs({
+            address: rewardContractAddress,
+            fromBlock: from,
+            toBlock: to,
+            topics: [transferSingleTopic, null, fromTopic, toTopic]
+          })
+      })
+    ]);
     count += batchLogs.length + singleLogs.length;
   }
 
@@ -344,7 +509,8 @@ export default async function handler(req, res) {
       return res.status(401).json({ ok: false, error: 'Signature verification failed.' });
     }
 
-    const provider = new ethers.JsonRpcProvider(runtime.baseRpcUrl);
+    const rpcProviders = buildRpcProviderPool(runtime);
+    const provider = rpcProviders[0].provider;
     const hasAccess = await hasTokenGateAccess(provider, address, runtime);
     if (!hasAccess) {
       return res.status(403).json({ ok: false, error: 'Wallet no longer holds the token-gated NFT.' });
@@ -412,7 +578,8 @@ export default async function handler(req, res) {
 
       if (rewardTokenDiscoveryStartBlock > 0) {
         discoveredTokenIdsOnchain = await discoverRewardTokenIdsFromTreasuryLogs({
-          provider,
+          rpcProviders,
+          runtime,
           rewardContractAddress,
           treasuryAddress,
           startBlock: rewardTokenDiscoveryStartBlock,
@@ -446,7 +613,8 @@ export default async function handler(req, res) {
     const gateTokenUnits = await getTokenGateUnits(provider, address, runtime);
     const maxClaimsAllowed = gateTokenUnits * BigInt(claimsPerGateToken);
     const walletClaimCount = await countWalletClaimsFromLogs({
-      provider,
+      rpcProviders,
+      runtime,
       rewardContractAddress,
       treasuryAddress,
       walletAddress: address,
