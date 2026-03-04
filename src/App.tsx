@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowRight, Check, Flame, Info, LockKeyhole, Shield, Wallet, X, Zap } from 'lucide-react';
 import { ethers } from 'ethers';
@@ -24,6 +24,7 @@ type ClaimResponse = {
 
 type BurnInventoryNft = {
   tokenId: string;
+  quantity?: string | number;
   name: string;
   imageUrl: string;
   displayImageUrl: string;
@@ -37,6 +38,20 @@ type BurnInventoryResponse = {
   ok: boolean;
   total?: number;
   nfts?: BurnInventoryNft[];
+  error?: string;
+};
+
+type BurnRewardWin = {
+  cid: string;
+  tokenUri: string;
+  imageUrl: string;
+};
+
+type BurnRewardResponse = {
+  ok: boolean;
+  burnedUnits?: number;
+  creditsAwarded?: number;
+  wins?: BurnRewardWin[];
   error?: string;
 };
 
@@ -65,7 +80,6 @@ type BurnWebsiteProps = {
   walletAddress: string;
   gatePass: string;
   claimResponse: ClaimResponse | null;
-  claimedNfts: NFT[];
   websiteCopy: WebsiteCopy;
   entryMode: 'claim' | 'gate-only';
   isClaimSigning: boolean;
@@ -86,6 +100,12 @@ declare global {
 const TARGET_CHAIN_ID = Number(import.meta.env.VITE_BASE_CHAIN_ID || 8453);
 const REWARD_CONTRACT = String(import.meta.env.VITE_REWARD_ERC1155_CONTRACT || '');
 const BURN_COLLECTION_SLUG = String(import.meta.env.VITE_BURN_COLLECTION_SLUG || 'cc0-by-pierre').trim();
+const BURN_CREDITS_PER_NFT = 20;
+const BURN_TO_ADDRESS = '0x000000000000000000000000000000000000dEaD';
+const ERC1155_BURN_TRANSFER_ABI = [
+  'function safeTransferFrom(address from, address to, uint256 id, uint256 value, bytes data)'
+];
+const GATE_SESSION_STORAGE_KEY = 'burn_to_redeem_gate_session_v1';
 
 const MOCK_REWARDS: Reward[] = [
   {
@@ -153,6 +173,47 @@ function buildClaimMessage(address: string, chainId: number, issuedAt: number, g
   ].join('\n');
 }
 
+type StoredGateSession = {
+  address: string;
+  gatePass: string;
+  expiresAt: number;
+};
+
+function readStoredGateSession() {
+  try {
+    const raw = window.localStorage.getItem(GATE_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredGateSession;
+    if (!parsed?.address || !parsed?.gatePass || !Number.isFinite(parsed?.expiresAt)) return null;
+    if (parsed.expiresAt <= Date.now()) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function storeGateSession(address: string, gatePass: string, expiresInSeconds: number) {
+  const expiresAt = Date.now() + Math.max(1, Number(expiresInSeconds || 0)) * 1000;
+  const payload: StoredGateSession = {
+    address: address.toLowerCase(),
+    gatePass,
+    expiresAt
+  };
+  try {
+    window.localStorage.setItem(GATE_SESSION_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // Ignore localStorage write errors.
+  }
+}
+
+function clearGateSession() {
+  try {
+    window.localStorage.removeItem(GATE_SESSION_STORAGE_KEY);
+  } catch {
+    // Ignore localStorage removal errors.
+  }
+}
+
 function rarityFromToken(tokenId: number): NFT['rarity'] {
   const mod = tokenId % 4;
   if (mod === 0) return 'Mythic';
@@ -161,58 +222,53 @@ function rarityFromToken(tokenId: number): NFT['rarity'] {
   return 'Common';
 }
 
-function burnValueFromToken(tokenId: number) {
-  return 80 + (tokenId % 20) * 15;
+function burnValueFromToken() {
+  return BURN_CREDITS_PER_NFT;
 }
 
-function expandClaimAllocationsToNfts(allocations?: ClaimAllocation[]): NFT[] {
-  if (!allocations || allocations.length === 0) return [];
-
-  const items: NFT[] = [];
-
-  allocations.forEach((allocation) => {
-    const tokenId = Number.parseInt(allocation.tokenId, 10);
-    const amount = Number.parseInt(allocation.amount, 10);
-    if (!Number.isInteger(tokenId) || !Number.isInteger(amount) || amount <= 0) return;
-
-    for (let index = 0; index < amount; index += 1) {
-      items.push({
-        id: `reward-${tokenId}-${index}`,
-        name: `TREASURE #${tokenId}`,
-        collection: 'TREASURY_DROP',
-        image: `https://picsum.photos/seed/reward-${tokenId}-${index}/400/400`,
-        rarity: rarityFromToken(tokenId),
-        burnValue: burnValueFromToken(tokenId)
-      });
-    }
-  });
-
-  return items;
+function parseQuantity(value: string | number | undefined) {
+  const parsed = Number.parseInt(String(value || '1'), 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
 }
 
 function mapBurnInventoryToNfts(items: BurnInventoryNft[]): NFT[] {
-  return items
-    .map((item, index) => {
-      const tokenIdNum = Number.parseInt(String(item.tokenId || ''), 10);
-      if (!Number.isInteger(tokenIdNum) || tokenIdNum < 0) return null;
+  const byKey = new Map<string, NFT>();
 
-      return {
-        id: `${item.contractAddress.toLowerCase()}-${item.tokenId}-${index}`,
-        name: item.name || `TREASURE #${item.tokenId}`,
-        collection: item.collectionName || item.collection || 'TREASURY_DROP',
-        image: item.displayImageUrl || item.imageUrl || '',
-        rarity: rarityFromToken(tokenIdNum),
-        burnValue: burnValueFromToken(tokenIdNum)
-      } as NFT;
-    })
-    .filter((item): item is NFT => item !== null);
+  for (const item of items) {
+    const tokenIdNum = Number.parseInt(String(item.tokenId || ''), 10);
+    if (!Number.isInteger(tokenIdNum) || tokenIdNum < 0) continue;
+
+    const contractAddress = String(item.contractAddress || '').toLowerCase();
+    const tokenId = String(item.tokenId);
+    const key = `${contractAddress}-${tokenId}`;
+    const quantity = parseQuantity(item.quantity);
+
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.quantity = (existing.quantity || 1) + quantity;
+      continue;
+    }
+
+    byKey.set(key, {
+      id: key,
+      name: item.name || `TREASURE #${item.tokenId}`,
+      collection: item.collectionName || item.collection || 'TREASURY_DROP',
+      image: item.displayImageUrl || item.imageUrl || '',
+      rarity: rarityFromToken(tokenIdNum),
+        burnValue: burnValueFromToken(),
+      quantity,
+      tokenId,
+      contractAddress
+    });
+  }
+
+  return Array.from(byKey.values());
 }
 
 function BurnWebsite({
   walletAddress,
   gatePass,
   claimResponse,
-  claimedNfts,
   websiteCopy,
   entryMode,
   isClaimSigning,
@@ -223,11 +279,14 @@ function BurnWebsite({
   const [balance, setBalance] = useState(0);
   const [selectedNft, setSelectedNft] = useState<NFT | null>(null);
   const [isBurning, setIsBurning] = useState(false);
+  const [burnError, setBurnError] = useState('');
+  const [burnDrops, setBurnDrops] = useState<BurnRewardWin[]>([]);
   const [burnedId, setBurnedId] = useState<string | null>(null);
   const [redeemSuccess, setRedeemSuccess] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'nfts' | 'rewards'>('nfts');
   const [isInventoryLoading, setIsInventoryLoading] = useState(false);
   const [inventoryNote, setInventoryNote] = useState('');
+  const totalBurnableUnits = userNfts.reduce((sum, nft) => sum + (nft.quantity || 1), 0);
 
   useEffect(() => {
     let cancelled = false;
@@ -311,19 +370,94 @@ function BurnWebsite({
 
   const handleBurn = async () => {
     if (!selectedNft) return;
+    if (!selectedNft.contractAddress || !selectedNft.tokenId) {
+      setBurnError('Missing contract or token ID for this NFT.');
+      return;
+    }
+    if (!window.ethereum) {
+      setBurnError('No wallet detected for burn transaction.');
+      return;
+    }
 
     setIsBurning(true);
-    await new Promise((resolve) => setTimeout(resolve, 1200));
+    setBurnError('');
 
-    setBalance((prev) => prev + selectedNft.burnValue);
-    setBurnedId(selectedNft.id);
+    try {
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const sender = await signer.getAddress();
+      const network = await provider.getNetwork();
+      if (Number(network.chainId) !== TARGET_CHAIN_ID) {
+        throw new Error(`Wrong network. Switch to Base (chain ${TARGET_CHAIN_ID}).`);
+      }
 
-    setTimeout(() => {
-      setUserNfts((prev) => prev.filter((nft) => nft.id !== selectedNft.id));
-      setSelectedNft(null);
+      const burnContract = new ethers.Contract(
+        selectedNft.contractAddress,
+        ERC1155_BURN_TRANSFER_ABI,
+        signer
+      );
+      const tx = await burnContract.safeTransferFrom(
+        sender,
+        BURN_TO_ADDRESS,
+        BigInt(selectedNft.tokenId),
+        1n,
+        '0x'
+      );
+      const receipt = await tx.wait(1);
+      if (!receipt || receipt.status !== 1) {
+        throw new Error('Burn transaction failed.');
+      }
+
+      setBurnedId(selectedNft.id);
+      setBalance((prev) => prev + BURN_CREDITS_PER_NFT);
+
+      setUserNfts((prev) => {
+        const next = [];
+        for (const nft of prev) {
+          if (nft.id !== selectedNft.id) {
+            next.push(nft);
+            continue;
+          }
+
+          const currentQuantity = nft.quantity || 1;
+          const updatedQuantity = currentQuantity - 1;
+          if (updatedQuantity > 0) {
+            next.push({ ...nft, quantity: updatedQuantity });
+          }
+        }
+        return next;
+      });
+
+      setSelectedNft((prev) => {
+        if (!prev || prev.id !== selectedNft.id) return prev;
+        const currentQuantity = prev.quantity || 1;
+        const updatedQuantity = currentQuantity - 1;
+        return updatedQuantity > 0 ? { ...prev, quantity: updatedQuantity } : null;
+      });
+
+      try {
+        const dropResponse = await fetch('/api/burn-reward', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            address: sender,
+            burnTxHash: tx.hash,
+            contractAddress: selectedNft.contractAddress
+          })
+        });
+        const dropBody = (await dropResponse.json().catch(() => ({}))) as BurnRewardResponse;
+        if (dropResponse.ok && dropBody.ok && Array.isArray(dropBody.wins) && dropBody.wins.length > 0) {
+          setBurnDrops((prev) => [...dropBody.wins!, ...prev].slice(0, 20));
+        }
+      } catch {
+        // Ignore bonus drop errors; burn + credits are already successful.
+      }
+    } catch (error) {
+      setBurnError(error instanceof Error ? error.message : 'Burn failed.');
+    } finally {
       setIsBurning(false);
-      setBurnedId(null);
-    }, 800);
+      setTimeout(() => setBurnedId(null), 600);
+    }
   };
 
   return (
@@ -382,7 +516,7 @@ function BurnWebsite({
               <>
                 <div className="font-mono uppercase text-xs tracking-[0.16em] text-white/60">Claim Confirmed</div>
                 <div className="mt-2 text-white/85">
-                  {claimResponse?.rewardNftsPerClaim || claimedNfts.length} reward NFTs unlocked and loaded into your burn inventory.
+                  {claimResponse?.rewardNftsPerClaim || 0} reward NFTs claimed from treasury.
                 </div>
                 {claimResponse?.txHash ? (
                   <a
@@ -435,8 +569,8 @@ function BurnWebsite({
                     <div className="text-xs font-mono text-white/40">NETWORK: BASE MAINNET</div>
                   </div>
                   <div className="text-right">
-                    <div className="text-3xl font-display font-bold">{userNfts.length}</div>
-                    <div className="text-xs font-mono text-white/40">BURNABLE_NFTS</div>
+                    <div className="text-3xl font-display font-bold">{totalBurnableUnits}</div>
+                    <div className="text-xs font-mono text-white/40">BURNABLE_UNITS</div>
                   </div>
                 </div>
               </div>
@@ -493,12 +627,18 @@ function BurnWebsite({
               </div>
             ) : null}
 
+            {burnError ? (
+              <div className="mb-6 rounded-xl border border-red-700/60 bg-red-900/20 px-4 py-3 text-xs font-mono text-red-200">
+                {burnError}
+              </div>
+            ) : null}
+
             {userNfts.length === 0 ? (
               <div className="glass-panel rounded-3xl p-16 text-center text-white/50">
-                No claimed rewards left to burn.
+                No burnable NFTs found for this wallet.
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-5">
                 <AnimatePresence mode="popLayout">
                   {userNfts.map((nft) => (
                     <motion.div
@@ -507,19 +647,18 @@ function BurnWebsite({
                       initial={{ opacity: 0, scale: 0.9 }}
                       animate={{
                         opacity: burnedId === nft.id ? 0 : 1,
-                        scale: burnedId === nft.id ? 1.1 : 1,
-                        filter: burnedId === nft.id ? 'brightness(2) saturate(0)' : 'none'
+                        scale: burnedId === nft.id ? 1.05 : 1
                       }}
                       exit={{ opacity: 0, scale: 0.8 }}
                       onClick={() => !isBurning && setSelectedNft(nft)}
-                      className={`group relative cursor-pointer rounded-2xl overflow-hidden brutalist-border ${selectedNft?.id === nft.id ? 'border-white ring-2 ring-white/20' : ''}`}
+                      className={`group cursor-pointer rounded-2xl overflow-hidden brutalist-border bg-black/55 ${selectedNft?.id === nft.id ? 'border-white ring-2 ring-white/20' : ''}`}
                     >
-                      <div className="aspect-square overflow-hidden bg-neutral-900">
+                      <div className="aspect-[4/3] overflow-hidden bg-neutral-900">
                         {nft.image ? (
                           <img
                             src={nft.image}
                             alt={nft.name}
-                            className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-700 group-hover:scale-110"
+                            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                             referrerPolicy="no-referrer"
                           />
                         ) : (
@@ -529,19 +668,19 @@ function BurnWebsite({
                         )}
                       </div>
 
-                      <div className="p-6 bg-black/80 backdrop-blur-sm absolute bottom-0 left-0 right-0 border-t border-white/10">
+                      <div className="p-4 border-t border-white/10">
                         <div className="flex justify-between items-start mb-2">
                           <div>
-                            <h3 className="font-display font-bold text-lg leading-none mb-1">{nft.name}</h3>
+                            <h3 className="font-display font-bold text-sm leading-tight mb-1">{nft.name}</h3>
                             <p className="text-[10px] font-mono text-white/40 uppercase tracking-widest">{nft.collection}</p>
                           </div>
-                          <div className="px-2 py-1 bg-white/10 rounded text-[10px] font-mono uppercase">{nft.rarity}</div>
+                          <div className="px-2 py-1 bg-white/10 rounded text-[10px] font-mono uppercase">x{nft.quantity || 1}</div>
                         </div>
-                        <div className="flex items-center justify-between mt-4">
+                        <div className="flex items-center justify-between mt-3">
                           <div className="flex items-center gap-2">
                             <Flame className="w-4 h-4 text-white/40" />
                             <span className="font-mono text-sm font-bold">
-                              {nft.burnValue} <span className="text-white/40">VAL</span>
+                              {nft.burnValue} <span className="text-white/40">CREDITS</span>
                             </span>
                           </div>
                           {selectedNft?.id === nft.id ? (
@@ -571,7 +710,7 @@ function BurnWebsite({
                 <div className="flex items-center gap-4">
                   <div className="w-16 h-16 rounded-lg overflow-hidden flex-shrink-0">
                     {selectedNft.image ? (
-                      <img src={selectedNft.image} alt="" className="w-full h-full object-cover grayscale" referrerPolicy="no-referrer" />
+                      <img src={selectedNft.image} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                     ) : (
                       <div className="w-full h-full bg-neutral-200 text-[9px] font-mono uppercase flex items-center justify-center text-neutral-500">
                         No Image
@@ -587,7 +726,10 @@ function BurnWebsite({
                 <div className="flex items-center gap-4">
                   <div className="text-right">
                     <div className="text-xs font-mono uppercase tracking-widest opacity-50">Receive</div>
-                    <div className="text-xl font-mono font-bold">+{selectedNft.burnValue} CREDITS</div>
+                    <div className="text-xl font-mono font-bold">+{BURN_CREDITS_PER_NFT} CREDITS</div>
+                    <div className="text-[10px] font-mono uppercase opacity-50 mt-1">
+                      Remaining: {selectedNft.quantity || 1}
+                    </div>
                   </div>
                   <button
                     onClick={handleBurn}
@@ -662,6 +804,33 @@ function BurnWebsite({
               ) : null}
             </div>
 
+            {burnDrops.length > 0 ? (
+              <div className="mb-8 rounded-2xl border border-white/15 bg-neutral-900/70 p-5">
+                <div className="text-xs font-mono uppercase tracking-[0.16em] text-white/55 mb-4">Burn Drop Wins</div>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                  {burnDrops.map((drop, index) => (
+                    <a
+                      key={`${drop.cid}-${index}`}
+                      href={drop.imageUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="group rounded-lg overflow-hidden border border-white/10 bg-black/40"
+                    >
+                      <div className="aspect-square overflow-hidden bg-neutral-900">
+                        <img
+                          src={drop.imageUrl}
+                          alt={drop.cid}
+                          className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                          referrerPolicy="no-referrer"
+                        />
+                      </div>
+                      <div className="p-2 text-[10px] font-mono text-white/70 truncate">{drop.cid}</div>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
               {MOCK_REWARDS.map((reward) => (
                 <div key={reward.id} className="glass-panel rounded-3xl overflow-hidden flex flex-col">
@@ -669,7 +838,7 @@ function BurnWebsite({
                     <img
                       src={reward.image}
                       alt={reward.name}
-                      className="w-full h-full object-cover grayscale hover:grayscale-0 transition-all duration-700"
+                      className="w-full h-full object-cover transition-transform duration-500 hover:scale-105"
                       referrerPolicy="no-referrer"
                     />
                   </div>
@@ -709,16 +878,10 @@ export default function App() {
   const [claimResponse, setClaimResponse] = useState<ClaimResponse | null>(null);
   const [websiteCopy, setWebsiteCopy] = useState<WebsiteCopy>(DEFAULT_WEBSITE_COPY);
   const [entryMode, setEntryMode] = useState<'claim' | 'gate-only'>('claim');
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [isGateSigning, setIsGateSigning] = useState(false);
+  const [isAccessLoading, setIsAccessLoading] = useState(false);
   const [isClaimSigning, setIsClaimSigning] = useState(false);
   const [error, setError] = useState('');
   const [enteredWebsite, setEnteredWebsite] = useState(false);
-
-  const claimedNfts = useMemo(
-    () => expandClaimAllocationsToNfts(claimResponse?.allocations),
-    [claimResponse?.allocations]
-  );
 
   useEffect(() => {
     let cancelled = false;
@@ -746,6 +909,54 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function restoreSession() {
+      const synced = await syncWalletIfAvailable();
+      if (!synced || cancelled) return;
+
+      const stored = readStoredGateSession();
+      if (!stored) return;
+
+      if (stored.address !== synced.address.toLowerCase()) {
+        clearGateSession();
+        return;
+      }
+
+      setGatePass(stored.gatePass);
+      setEntryMode('gate-only');
+      setEnteredWebsite(true);
+    }
+
+    restoreSession().catch(() => {
+      // Ignore restore failures.
+    });
+
+    const handleAccountsChanged = (accounts: unknown) => {
+      const values = Array.isArray(accounts) ? accounts : [];
+      if (values.length === 0) {
+        setWalletAddress('');
+        setChainId(null);
+        setGatePass('');
+        setEnteredWebsite(false);
+        setClaimResponse(null);
+        clearGateSession();
+        return;
+      }
+      syncWallet().catch(() => {
+        // Ignore sync failures.
+      });
+    };
+
+    window.ethereum?.on?.('accountsChanged', handleAccountsChanged);
+
+    return () => {
+      cancelled = true;
+      window.ethereum?.removeListener?.('accountsChanged', handleAccountsChanged);
+    };
+  }, []);
+
   async function getProvider() {
     if (!window.ethereum) {
       throw new Error('No wallet detected. Install MetaMask or another injected wallet.');
@@ -765,23 +976,14 @@ export default function App() {
     return { provider, signer, address, chainId: Number(network.chainId) };
   }
 
-  async function connectWallet() {
-    setError('');
-    setIsConnecting(true);
-
-    try {
-      await window.ethereum?.request({ method: 'eth_requestAccounts' });
-      await syncWallet();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to connect wallet';
-      setError(message);
-    } finally {
-      setIsConnecting(false);
-    }
+  async function syncWalletIfAvailable() {
+    if (!window.ethereum) return null;
+    const accounts = (await window.ethereum.request({ method: 'eth_accounts' }).catch(() => [])) as string[];
+    if (!Array.isArray(accounts) || accounts.length === 0) return null;
+    return syncWallet();
   }
 
   async function switchToBase() {
-    setError('');
     try {
       if (!window.ethereum) throw new Error('No wallet detected.');
       await window.ethereum.request({
@@ -790,31 +992,47 @@ export default function App() {
       });
       await syncWallet();
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to switch network';
-      setError(message);
+      throw new Error(err instanceof Error ? err.message : 'Failed to switch network');
     }
   }
 
-  async function handleGateSignature() {
+  async function handleAccessLogin() {
     setError('');
-    setIsGateSigning(true);
+    setIsAccessLoading(true);
 
     try {
+      if (!window.ethereum) {
+        throw new Error('No wallet detected. Install MetaMask or another injected wallet.');
+      }
+
+      await window.ethereum.request({ method: 'eth_requestAccounts' });
       const { signer, address, chainId: currentChainId } = await syncWallet();
-      if (currentChainId !== TARGET_CHAIN_ID) {
-        throw new Error(`Wrong network. Switch to Base (chain ${TARGET_CHAIN_ID}) first.`);
+      let activeSigner = signer;
+      let activeAddress = address;
+      let activeChainId = currentChainId;
+
+      if (activeChainId !== TARGET_CHAIN_ID) {
+        await switchToBase();
+        const synced = await syncWallet();
+        activeSigner = synced.signer;
+        activeAddress = synced.address;
+        activeChainId = synced.chainId;
+      }
+
+      if (activeChainId !== TARGET_CHAIN_ID) {
+        throw new Error(`Wrong network. Switch to Base (chain ${TARGET_CHAIN_ID}).`);
       }
 
       const issuedAt = Date.now();
-      const message = buildGateMessage(address, currentChainId, issuedAt);
-      const signature = await signer.signMessage(message);
+      const message = buildGateMessage(activeAddress, activeChainId, issuedAt);
+      const signature = await activeSigner.signMessage(message);
 
       const response = await fetch('/api/auth-gate', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          address,
-          chainId: currentChainId,
+          address: activeAddress,
+          chainId: activeChainId,
           issuedAt,
           signature
         })
@@ -826,13 +1044,14 @@ export default function App() {
       }
 
       setGatePass(body.gatePass);
+      storeGateSession(activeAddress, body.gatePass, Number(body.expiresInSeconds || 900));
       setEntryMode('gate-only');
       setEnteredWebsite(true);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Token gate signing failed';
+      const message = err instanceof Error ? err.message : 'Token gate login failed';
       setError(message);
     } finally {
-      setIsGateSigning(false);
+      setIsAccessLoading(false);
     }
   }
 
@@ -891,7 +1110,6 @@ export default function App() {
         walletAddress={walletAddress}
         gatePass={gatePass}
         claimResponse={claimResponse}
-        claimedNfts={claimedNfts}
         websiteCopy={websiteCopy}
         entryMode={entryMode}
         isClaimSigning={isClaimSigning}
@@ -902,66 +1120,73 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-100">
-      <div className="mx-auto max-w-3xl px-5 py-10">
-        <h1 className="text-3xl font-bold tracking-tight">{websiteCopy.accessTitle}</h1>
-        <p className="mt-2 text-sm text-neutral-400">
-          {websiteCopy.accessSubtitle}
-        </p>
-
-        <div className="mt-6 space-y-4 rounded-xl border border-neutral-800 bg-neutral-900/60 p-5">
-            <div className="flex items-center gap-2">
-              <LockKeyhole className="w-5 h-5 text-cyan-300" />
-              <h2 className="text-lg font-semibold">{websiteCopy.step1Title}</h2>
-            </div>
-            <p className="text-sm text-neutral-400">{websiteCopy.step1Subtitle}</p>
-
-          {!isConnected ? (
-            <button
-              onClick={connectWallet}
-              disabled={isConnecting}
-              className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black disabled:opacity-50"
-            >
-              {isConnecting ? 'Connecting...' : 'Connect Wallet'}
-            </button>
-          ) : (
-            <div className="space-y-3 text-sm">
-              <div className="rounded-md border border-neutral-700 px-3 py-2">
-                Connected: <span className="font-mono">{shortAddress(walletAddress)}</span>
-              </div>
-              <div className="rounded-md border border-neutral-700 px-3 py-2">
-                Network: <span className="font-mono">{chainId}</span>
-              </div>
-
-              {isWrongNetwork ? (
-                <button
-                  onClick={switchToBase}
-                  className="rounded-lg bg-amber-300 px-4 py-2 font-semibold text-black"
-                >
-                  Switch to Base
-                </button>
-              ) : (
-                <button
-                  onClick={handleGateSignature}
-                  disabled={isGateSigning || Boolean(gatePass)}
-                  className="rounded-lg bg-emerald-300 px-4 py-2 font-semibold text-black disabled:opacity-50"
-                >
-                  {gatePass
-                    ? 'Gate Access Verified'
-                    : isGateSigning
-                      ? 'Waiting for signature...'
-                      : 'Sign Token-Gate Message'}
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-
-        {error ? (
-          <div className="mt-4 rounded-xl border border-red-600/40 bg-red-900/20 p-4 text-sm text-red-200">{error}</div>
-        ) : null}
-
+    <div className="min-h-screen font-sans selection:bg-white selection:text-black relative overflow-hidden text-neutral-100">
+      <div className="fixed inset-0 pointer-events-none">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(255,255,255,0.12)_0%,transparent_45%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_80%_70%,rgba(255,255,255,0.08)_0%,transparent_45%)]" />
+        <div className="scanline" />
       </div>
+
+      <main className="relative z-10 min-h-screen flex items-center justify-center px-6 py-16">
+        <div className="w-full max-w-3xl">
+          <div className="glass-panel rounded-3xl p-10 md:p-14">
+            <div className="flex items-center gap-3 mb-8">
+              <div className="w-11 h-11 bg-white text-black rounded-sm flex items-center justify-center">
+                <LockKeyhole className="w-6 h-6" />
+              </div>
+              <div className="text-xs font-mono uppercase tracking-[0.2em] text-white/60">
+                Token-Gated Access
+              </div>
+            </div>
+
+            <h1 className="font-display text-5xl md:text-7xl font-black tracking-tight leading-[0.9] uppercase">
+              {websiteCopy.accessTitle}
+            </h1>
+            <p className="mt-5 text-base md:text-lg text-white/70 max-w-2xl leading-relaxed">
+              {websiteCopy.accessSubtitle}
+            </p>
+
+            <div className="mt-10 rounded-2xl border border-white/15 bg-black/40 p-5">
+              <div className="flex flex-wrap items-center justify-between gap-4 text-sm">
+                <div>
+                  <div className="text-xs font-mono uppercase tracking-[0.15em] text-white/50">Wallet</div>
+                  <div className="mt-1 text-white/85 font-mono">
+                    {isConnected ? shortAddress(walletAddress) : 'Not connected'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs font-mono uppercase tracking-[0.15em] text-white/50">Network</div>
+                  <div className={`mt-1 font-mono ${isWrongNetwork ? 'text-amber-300' : 'text-white/85'}`}>
+                    {chainId === null ? 'Not connected' : `Chain ${chainId}`}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={handleAccessLogin}
+              disabled={isAccessLoading}
+              className="mt-8 w-full rounded-xl bg-white text-black py-4 px-6 font-display font-bold uppercase tracking-[0.08em] text-lg transition-transform hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50"
+            >
+              {isAccessLoading
+                ? 'Connecting...'
+                : !isConnected
+                  ? 'Connect Wallet & Enter'
+                  : isWrongNetwork
+                    ? 'Switch To Base & Enter'
+                    : 'Enter Website'}
+            </button>
+
+            <div className="mt-4 text-xs font-mono text-white/45">
+              One click: connect, switch network if needed, sign, and enter.
+            </div>
+
+            {error ? (
+              <div className="mt-6 rounded-xl border border-red-600/40 bg-red-900/20 p-4 text-sm text-red-200">{error}</div>
+            ) : null}
+          </div>
+        </div>
+      </main>
     </div>
   );
 }

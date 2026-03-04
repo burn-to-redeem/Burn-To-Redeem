@@ -44,6 +44,7 @@ Required:
 - `REWARD_TX_RETRY_ATTEMPTS`
 - `REWARD_TX_RETRY_WAIT_MS`
 - `REWARD_RETRY_FEE_BUMP_BPS`
+- `BURN_REWARD_CID_1` ... `BURN_REWARD_CID_5` (up to 5 CID prizes for random post-burn drops)
 - `ADMIN_PASSWORD`
 - `ADMIN_SESSION_SECRET`
 - `ADMIN_SESSION_TTL_SECONDS`
@@ -97,3 +98,4 @@ Deploy to Vercel and set env vars in the project dashboard.
 
 - UI includes a `NFTS TO BURN` tab that loads wallet inventory from `GET /api/nfts-to-burn` (OpenSea-backed, server-side key only), filtered by `cc0-by-pierre` by default.
 - Optional contract filtering still applies when a reward contract is configured, and the gallery is shown in a card grid ready for burn selection.
+- Burn action uses wallet-signed ERC-1155 transfer to dead address, awards `20` credits per burned NFT in UI, and calls `POST /api/burn-reward` for random CID drops (`1 in 5` chance per burn).

@@ -40,6 +40,47 @@ function normalizeTokenId(value) {
   return '';
 }
 
+function normalizeQuantity(value) {
+  const raw = cleanString(value);
+  if (!raw) return '1';
+
+  try {
+    if (/^0x[0-9a-f]+$/i.test(raw)) {
+      const parsed = BigInt(raw);
+      return parsed > 0n ? parsed.toString(10) : '1';
+    }
+    if (/^\d+$/.test(raw)) {
+      const parsed = BigInt(raw);
+      return parsed > 0n ? parsed.toString(10) : '1';
+    }
+  } catch {
+    return '1';
+  }
+
+  return '1';
+}
+
+function makeNftKey(item) {
+  return `${item.contractAddress.toLowerCase()}:${item.tokenId}`;
+}
+
+function pushOrAggregateNft(collected, indexByKey, item, itemCap) {
+  const key = makeNftKey(item);
+  const existingIndex = indexByKey.get(key);
+  const quantity = BigInt(item.quantity || '1');
+
+  if (existingIndex !== undefined) {
+    const existing = collected[existingIndex];
+    const merged = BigInt(existing.quantity || '1') + quantity;
+    existing.quantity = merged.toString(10);
+    return false;
+  }
+
+  indexByKey.set(key, collected.length);
+  collected.push(item);
+  return collected.length >= itemCap;
+}
+
 function normalizeNft(nft, chainHint) {
   const source = nft && typeof nft === 'object' ? nft : {};
   const contractRaw = source.contract && typeof source.contract === 'object' ? source.contract : {};
@@ -52,9 +93,13 @@ function normalizeNft(nft, chainHint) {
   const collectionName = cleanString(
     collectionRaw.name || (typeof source.collection === 'string' ? source.collection : '')
   );
+  const quantity = normalizeQuantity(
+    source.quantity || source.balance || source.amount || source.num_owned || source.owned_quantity
+  );
 
   return {
     tokenId,
+    quantity,
     name: cleanString(source.name) || (tokenId ? `#${tokenId}` : 'Untitled'),
     description: cleanString(source.description),
     imageUrl: cleanString(source.image_url || source.image || source.image_original_url),
@@ -139,7 +184,7 @@ export async function fetchOpenSeaWalletContractNfts({
   const pageSize = clampInt(perPage, 50, 1, 200);
   const itemCap = clampInt(maxItems, 250, 1, 20000);
   const collected = [];
-  const seen = new Set();
+  const indexByKey = new Map();
 
   async function collect(strategy, queryContractFilter, localFilterContract) {
     let next = '';
@@ -160,11 +205,7 @@ export async function fetchOpenSeaWalletContractNfts({
         if (!item.tokenId) continue;
         if (localFilterContract && item.contractAddress.toLowerCase() !== normalizedContract) continue;
 
-        const key = `${item.contractAddress.toLowerCase()}:${item.tokenId}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        collected.push(item);
-        if (collected.length >= itemCap) {
+        if (pushOrAggregateNft(collected, indexByKey, item, itemCap)) {
           return { strategy, next: cleanString(payload?.next) };
         }
       }
@@ -218,7 +259,7 @@ export async function fetchOpenSeaWalletCollectionNfts({
   const pageSize = clampInt(perPage, 50, 1, 200);
   const itemCap = clampInt(maxItems, 250, 1, 20000);
   const collected = [];
-  const seen = new Set();
+  const indexByKey = new Map();
 
   function matchesLocalFilter(item) {
     if (item.collection !== cleanedCollectionSlug) return false;
@@ -245,11 +286,7 @@ export async function fetchOpenSeaWalletCollectionNfts({
         if (!item.tokenId) continue;
         if (localFilter && !matchesLocalFilter(item)) continue;
 
-        const key = `${item.contractAddress.toLowerCase()}:${item.tokenId}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        collected.push(item);
-        if (collected.length >= itemCap) {
+        if (pushOrAggregateNft(collected, indexByKey, item, itemCap)) {
           return { strategy, next: cleanString(payload?.next) };
         }
       }
