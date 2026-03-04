@@ -262,10 +262,19 @@ export async function fetchOpenSeaWalletCollectionNfts({
   }
 
   let strategyUsed = 'collection-slug';
+  let shouldFallback = false;
   try {
     const result = await collect('collection-slug', cleanedCollectionSlug, false);
     strategyUsed = result.strategy;
   } catch {
+    shouldFallback = true;
+  }
+
+  if (collected.length === 0) {
+    shouldFallback = true;
+  }
+
+  if (shouldFallback) {
     const result = await collect('wallet-local-collection-filter', '', true);
     strategyUsed = result.strategy;
   }
