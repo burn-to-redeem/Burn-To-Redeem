@@ -16,9 +16,13 @@ export const EDITABLE_OVERRIDE_KEYS = [
   'REWARD_ERC1155_CONTRACT',
   'REWARD_ERC1155_TOKEN_IDS',
   'REWARD_NFTS_PER_CLAIM',
+  'REWARD_RANDOM_STRATEGY',
   'CLAIMS_PER_GATE_TOKEN',
   'REWARD_CLAIM_START_BLOCK',
   'REWARD_LOG_SCAN_STEP',
+  'REWARD_TOKEN_DISCOVERY_START_BLOCK',
+  'REWARD_TOKEN_DISCOVERY_LOG_SCAN_STEP',
+  'REWARD_TOKEN_DISCOVERY_MAX_ITEMS',
   'REWARD_GAS_MODE',
   'REWARD_MIN_PRIORITY_GWEI',
   'REWARD_BASE_FEE_MULTIPLIER_BPS',
@@ -57,9 +61,13 @@ const DEFAULT_EDITABLE_CONFIG = {
   REWARD_ERC1155_CONTRACT: process.env.REWARD_ERC1155_CONTRACT || '',
   REWARD_ERC1155_TOKEN_IDS: process.env.REWARD_ERC1155_TOKEN_IDS || '',
   REWARD_NFTS_PER_CLAIM: process.env.REWARD_NFTS_PER_CLAIM || '20',
+  REWARD_RANDOM_STRATEGY: process.env.REWARD_RANDOM_STRATEGY || 'token_uniform',
   CLAIMS_PER_GATE_TOKEN: process.env.CLAIMS_PER_GATE_TOKEN || '1',
   REWARD_CLAIM_START_BLOCK: process.env.REWARD_CLAIM_START_BLOCK || '',
   REWARD_LOG_SCAN_STEP: process.env.REWARD_LOG_SCAN_STEP || '9000',
+  REWARD_TOKEN_DISCOVERY_START_BLOCK: process.env.REWARD_TOKEN_DISCOVERY_START_BLOCK || '',
+  REWARD_TOKEN_DISCOVERY_LOG_SCAN_STEP: process.env.REWARD_TOKEN_DISCOVERY_LOG_SCAN_STEP || '9000',
+  REWARD_TOKEN_DISCOVERY_MAX_ITEMS: process.env.REWARD_TOKEN_DISCOVERY_MAX_ITEMS || '20000',
   REWARD_GAS_MODE: process.env.REWARD_GAS_MODE || 'lowest',
   REWARD_MIN_PRIORITY_GWEI: process.env.REWARD_MIN_PRIORITY_GWEI || '0.000001',
   REWARD_BASE_FEE_MULTIPLIER_BPS: process.env.REWARD_BASE_FEE_MULTIPLIER_BPS || '10000',
@@ -123,9 +131,13 @@ function buildRuntimeFromConfig(config, overrides, updatedAt) {
     rewardErc1155Contract: config.REWARD_ERC1155_CONTRACT,
     rewardErc1155TokenIds: config.REWARD_ERC1155_TOKEN_IDS,
     rewardNftsPerClaim: parsePositiveInt(config.REWARD_NFTS_PER_CLAIM, 20),
+    rewardRandomStrategy: config.REWARD_RANDOM_STRATEGY || 'token_uniform',
     claimsPerGateToken: parsePositiveInt(config.CLAIMS_PER_GATE_TOKEN, 1),
     rewardClaimStartBlock: parsePositiveInt(config.REWARD_CLAIM_START_BLOCK, 0),
     rewardLogScanStep: parsePositiveInt(config.REWARD_LOG_SCAN_STEP, 9000),
+    rewardTokenDiscoveryStartBlock: parsePositiveInt(config.REWARD_TOKEN_DISCOVERY_START_BLOCK, 0),
+    rewardTokenDiscoveryLogScanStep: parsePositiveInt(config.REWARD_TOKEN_DISCOVERY_LOG_SCAN_STEP, 9000),
+    rewardTokenDiscoveryMaxItems: parsePositiveInt(config.REWARD_TOKEN_DISCOVERY_MAX_ITEMS, 20000),
     rewardGasMode: config.REWARD_GAS_MODE || 'lowest',
     rewardMinPriorityGwei: config.REWARD_MIN_PRIORITY_GWEI || '0.000001',
     rewardBaseFeeMultiplierBps: parsePositiveInt(config.REWARD_BASE_FEE_MULTIPLIER_BPS, 10000),
@@ -178,6 +190,14 @@ function sanitizeOverrides(input) {
       const standard = String(value).trim().toLowerCase();
       if (standard === 'erc721' || standard === 'erc1155') {
         clean[key] = standard;
+      }
+      continue;
+    }
+
+    if (key === 'REWARD_RANDOM_STRATEGY') {
+      const strategy = String(value).trim().toLowerCase();
+      if (strategy === 'token_uniform' || strategy === 'unit_weighted') {
+        clean[key] = strategy;
       }
       continue;
     }

@@ -261,7 +261,7 @@ function BurnWebsite({ walletAddress, claimResponse, claimedNfts, websiteCopy, e
         }
 
         const response = await fetch(
-          `/api/nfts-to-burn?address=${encodeURIComponent(walletAddress)}&contract=${encodeURIComponent(contractAddress)}&max=150`
+          `/api/nfts-to-burn?address=${encodeURIComponent(walletAddress)}&contract=${encodeURIComponent(contractAddress)}&max=2000`
         );
         const body = (await response.json().catch(() => ({}))) as BurnInventoryResponse;
 

@@ -200,12 +200,20 @@ function randomBigIntBelow(maxExclusive) {
   }
 }
 
+function randomIndex(maxExclusive) {
+  if (!Number.isInteger(maxExclusive) || maxExclusive <= 0) {
+    throw new Error('maxExclusive must be a positive integer.');
+  }
+  return Number(randomBigIntBelow(BigInt(maxExclusive)));
+}
+
 export async function pickRandomRewardAllocations({
   provider,
   rewardContractAddress,
   treasuryAddress,
   tokenIds,
-  rewardCount
+  rewardCount,
+  selectionStrategy = 'token_uniform'
 }) {
   const rewardContract = new ethers.Contract(rewardContractAddress, ERC1155_TRANSFER_ABI, provider);
 
@@ -240,35 +248,55 @@ export async function pickRandomRewardAllocations({
     throw new Error(`Not enough treasury rewards. Requested ${rewardCount}, available ${totalUnits.toString()}.`);
   }
 
+  const strategy = String(selectionStrategy || 'token_uniform').trim().toLowerCase();
   const selected = new Map();
-  let remainingUnits = totalUnits;
 
-  for (let i = 0; i < rewardCount; i += 1) {
-    const target = randomBigIntBelow(remainingUnits);
-    let cursor = 0n;
-    let chosenIndex = -1;
+  if (strategy === 'unit_weighted') {
+    let remainingUnits = totalUnits;
 
-    for (let idx = 0; idx < available.length; idx += 1) {
-      cursor += available[idx].balance;
-      if (target < cursor) {
-        chosenIndex = idx;
-        break;
+    for (let i = 0; i < rewardCount; i += 1) {
+      const target = randomBigIntBelow(remainingUnits);
+      let cursor = 0n;
+      let chosenIndex = -1;
+
+      for (let idx = 0; idx < available.length; idx += 1) {
+        cursor += available[idx].balance;
+        if (target < cursor) {
+          chosenIndex = idx;
+          break;
+        }
+      }
+
+      if (chosenIndex === -1) {
+        throw new Error('Failed to select random reward token.');
+      }
+
+      const chosen = available[chosenIndex];
+      const key = chosen.tokenId.toString();
+      selected.set(key, (selected.get(key) || 0n) + 1n);
+
+      chosen.balance -= 1n;
+      if (chosen.balance <= 0n) {
+        available.splice(chosenIndex, 1);
+      }
+      remainingUnits -= 1n;
+    }
+  } else {
+    for (let i = 0; i < rewardCount; i += 1) {
+      if (available.length === 0) {
+        throw new Error('No available reward token IDs left during allocation.');
+      }
+
+      const chosenIndex = randomIndex(available.length);
+      const chosen = available[chosenIndex];
+      const key = chosen.tokenId.toString();
+      selected.set(key, (selected.get(key) || 0n) + 1n);
+
+      chosen.balance -= 1n;
+      if (chosen.balance <= 0n) {
+        available.splice(chosenIndex, 1);
       }
     }
-
-    if (chosenIndex === -1) {
-      throw new Error('Failed to select random reward token.');
-    }
-
-    const chosen = available[chosenIndex];
-    const key = chosen.tokenId.toString();
-    selected.set(key, (selected.get(key) || 0n) + 1n);
-
-    chosen.balance -= 1n;
-    if (chosen.balance <= 0n) {
-      available.splice(chosenIndex, 1);
-    }
-    remainingUnits -= 1n;
   }
 
   return Array.from(selected.entries()).map(([tokenId, amount]) => ({

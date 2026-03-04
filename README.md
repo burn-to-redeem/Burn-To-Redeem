@@ -21,9 +21,13 @@ Required:
 - `REWARD_ERC1155_CONTRACT`
 - `REWARD_ERC1155_TOKEN_IDS`
 - `REWARD_NFTS_PER_CLAIM` (set to `20` for the current reward policy)
+- `REWARD_RANDOM_STRATEGY` (`token_uniform` recommended for random distribution across token IDs, or `unit_weighted`)
 - `CLAIMS_PER_GATE_TOKEN` (set to `1` to allow one reward claim per gated token unit)
 - `REWARD_CLAIM_START_BLOCK` (required for claim limit enforcement; set this to the deployment block for reward claims)
 - `REWARD_LOG_SCAN_STEP` (default `9000`; lower if RPC log queries time out)
+- `REWARD_TOKEN_DISCOVERY_START_BLOCK` (start block for treasury token ID discovery via on-chain logs when IDs are not manually configured)
+- `REWARD_TOKEN_DISCOVERY_LOG_SCAN_STEP`
+- `REWARD_TOKEN_DISCOVERY_MAX_ITEMS`
 - `OPENSEA_API_KEY` (used for `NFTS TO BURN` gallery and automatic reward token ID discovery)
 - `OPENSEA_MCP_TOKEN` (optional alternative/extra auth header for OpenSea calls)
 - `REWARD_GAS_MODE` (`lowest` recommended)
@@ -48,7 +52,7 @@ Required:
 - `safeBatchTransferFrom` is used (one tx) and low-gas EIP-1559 overrides are applied when `REWARD_GAS_MODE=lowest`.
 - If a tx remains pending, retries reuse the same nonce with a fee bump for replacement until confirmation.
 - Current backend claim enforcement counts prior treasury transfer logs from `REWARD_CLAIM_START_BLOCK` to ensure a wallet cannot over-claim versus gated token units held.
-- If `REWARD_ERC1155_TOKEN_IDS` is empty, the backend auto-discovers treasury-held token IDs from OpenSea before selecting random rewards.
+- If `REWARD_ERC1155_TOKEN_IDS` is empty, the backend auto-discovers treasury-held token IDs from OpenSea plus on-chain transfer logs (from `REWARD_TOKEN_DISCOVERY_START_BLOCK`) before selecting random rewards.
 
 ## Admin backend login
 

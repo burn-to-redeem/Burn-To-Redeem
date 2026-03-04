@@ -34,6 +34,12 @@ function parseNonNegativeInt(value, fallback) {
   return fallback;
 }
 
+function parseRewardRandomStrategy(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'unit_weighted') return 'unit_weighted';
+  return 'token_uniform';
+}
+
 function parseGweiToWei(value, fallbackGwei) {
   const raw = String(value || fallbackGwei).trim();
   return ethers.parseUnits(raw, 'gwei');
@@ -80,6 +86,122 @@ function applyFeeBump(overrides, bumpBps) {
   }
 
   return bumped;
+}
+
+const ERC1155_LOG_INTERFACE = new ethers.Interface([
+  'event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)',
+  'event TransferBatch(address indexed operator, address indexed from, address indexed to, uint256[] ids, uint256[] values)'
+]);
+
+function dedupeBigIntValues(values) {
+  const seen = new Set();
+  const out = [];
+  for (const value of values) {
+    const key = value.toString();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
+function sortBigIntValues(values) {
+  return [...values].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+}
+
+async function discoverRewardTokenIdsFromTreasuryLogs({
+  provider,
+  rewardContractAddress,
+  treasuryAddress,
+  startBlock,
+  step,
+  maxCandidateIds
+}) {
+  const latestBlock = await provider.getBlockNumber();
+  if (startBlock <= 0 || startBlock > latestBlock) {
+    return [];
+  }
+
+  const transferSingleTopic = ethers.id('TransferSingle(address,address,address,uint256,uint256)');
+  const transferBatchTopic = ethers.id('TransferBatch(address,address,address,uint256[],uint256[])');
+  const treasuryTopic = ethers.zeroPadValue(treasuryAddress, 32);
+  const candidateIds = new Set();
+  let reachedCap = false;
+
+  for (let from = startBlock; from <= latestBlock && !reachedCap; from += step) {
+    const to = Math.min(from + step - 1, latestBlock);
+
+    const logGroups = await Promise.all([
+      provider.getLogs({
+        address: rewardContractAddress,
+        fromBlock: from,
+        toBlock: to,
+        topics: [transferSingleTopic, null, treasuryTopic]
+      }),
+      provider.getLogs({
+        address: rewardContractAddress,
+        fromBlock: from,
+        toBlock: to,
+        topics: [transferSingleTopic, null, null, treasuryTopic]
+      }),
+      provider.getLogs({
+        address: rewardContractAddress,
+        fromBlock: from,
+        toBlock: to,
+        topics: [transferBatchTopic, null, treasuryTopic]
+      }),
+      provider.getLogs({
+        address: rewardContractAddress,
+        fromBlock: from,
+        toBlock: to,
+        topics: [transferBatchTopic, null, null, treasuryTopic]
+      })
+    ]);
+
+    const allLogs = logGroups.flat();
+    for (const log of allLogs) {
+      try {
+        const parsed = ERC1155_LOG_INTERFACE.parseLog(log);
+        if (!parsed) continue;
+
+        if (parsed.name === 'TransferSingle') {
+          candidateIds.add(parsed.args.id.toString());
+        } else if (parsed.name === 'TransferBatch') {
+          for (const tokenId of parsed.args.ids) {
+            candidateIds.add(tokenId.toString());
+          }
+        }
+      } catch {
+        // Ignore logs that fail to decode.
+      }
+
+      if (candidateIds.size >= maxCandidateIds) {
+        reachedCap = true;
+        break;
+      }
+    }
+  }
+
+  if (candidateIds.size === 0) {
+    return [];
+  }
+
+  const rewardContract = new ethers.Contract(
+    rewardContractAddress,
+    ['function balanceOf(address account, uint256 id) view returns (uint256)'],
+    provider
+  );
+
+  const sortedCandidates = sortBigIntValues(Array.from(candidateIds, (value) => BigInt(value)));
+  const positiveBalanceIds = [];
+  for (const tokenId of sortedCandidates) {
+    const balance = await rewardContract.balanceOf(treasuryAddress, tokenId);
+    if (balance > 0n) {
+      positiveBalanceIds.push(tokenId);
+    }
+  }
+
+  return positiveBalanceIds;
 }
 
 async function countWalletClaimsFromLogs({
@@ -234,9 +356,19 @@ export default async function handler(req, res) {
       runtime.rewardErc1155TokenIds || process.env.REWARD_ERC1155_TOKEN_IDS || ''
     ).trim();
     const rewardNftsPerClaim = Number.parseInt(String(runtime.rewardNftsPerClaim || '20'), 10);
+    const rewardRandomStrategy = parseRewardRandomStrategy(runtime.rewardRandomStrategy);
     const claimsPerGateToken = parsePositiveInt(runtime.claimsPerGateToken, 1);
     const rewardClaimStartBlock = parseNonNegativeInt(runtime.rewardClaimStartBlock, 0);
     const rewardLogScanStep = parsePositiveInt(runtime.rewardLogScanStep, 9000);
+    const rewardTokenDiscoveryStartBlock = parseNonNegativeInt(
+      runtime.rewardTokenDiscoveryStartBlock,
+      rewardClaimStartBlock
+    );
+    const rewardTokenDiscoveryLogScanStep = parsePositiveInt(
+      runtime.rewardTokenDiscoveryLogScanStep,
+      rewardLogScanStep
+    );
+    const rewardTokenDiscoveryMaxItems = parsePositiveInt(runtime.rewardTokenDiscoveryMaxItems, 20000);
 
     if (!Number.isInteger(rewardNftsPerClaim) || rewardNftsPerClaim <= 0) {
       return res.status(400).json({ ok: false, error: 'REWARD_NFTS_PER_CLAIM must be a positive integer.' });
@@ -256,27 +388,58 @@ export default async function handler(req, res) {
 
     let rewardTokenIds = parseRewardTokenIds(configuredRewardTokenIdsRaw);
     let rewardTokenIdsSource = configuredRewardTokenIdsRaw ? 'config' : 'opensea';
+    let discoveredTokenIdsOpenSea = [];
+    let discoveredTokenIdsOnchain = [];
+    let openSeaDiscoveryError = '';
 
     if (rewardTokenIds.length === 0) {
-      const openseaItems = await fetchOpenSeaWalletContractNfts({
-        walletAddress: treasuryAddress,
-        contractAddress: rewardContractAddress,
-        chainId: runtime.chainId,
-        apiKey: process.env.OPENSEA_API_KEY,
-        mcpToken: process.env.OPENSEA_MCP_TOKEN,
-        perPage: 80,
-        maxItems: 1000,
-        timeoutMs: 12000
-      });
+      try {
+        const openseaItems = await fetchOpenSeaWalletContractNfts({
+          walletAddress: treasuryAddress,
+          contractAddress: rewardContractAddress,
+          chainId: runtime.chainId,
+          apiKey: process.env.OPENSEA_API_KEY,
+          mcpToken: process.env.OPENSEA_MCP_TOKEN,
+          perPage: 80,
+          maxItems: rewardTokenDiscoveryMaxItems,
+          timeoutMs: 12000
+        });
+        discoveredTokenIdsOpenSea = extractUniqueTokenIds(openseaItems.nfts).map((tokenId) => BigInt(tokenId));
+      } catch (error) {
+        openSeaDiscoveryError =
+          error instanceof Error ? error.message : 'OpenSea discovery failed.';
+      }
 
-      const discoveredTokenIds = extractUniqueTokenIds(openseaItems.nfts).map((tokenId) => BigInt(tokenId));
-      rewardTokenIds = discoveredTokenIds;
+      if (rewardTokenDiscoveryStartBlock > 0) {
+        discoveredTokenIdsOnchain = await discoverRewardTokenIdsFromTreasuryLogs({
+          provider,
+          rewardContractAddress,
+          treasuryAddress,
+          startBlock: rewardTokenDiscoveryStartBlock,
+          step: rewardTokenDiscoveryLogScanStep,
+          maxCandidateIds: rewardTokenDiscoveryMaxItems
+        });
+      }
+
+      rewardTokenIds = sortBigIntValues(
+        dedupeBigIntValues([...discoveredTokenIdsOpenSea, ...discoveredTokenIdsOnchain])
+      );
+
+      if (discoveredTokenIdsOpenSea.length > 0 && discoveredTokenIdsOnchain.length > 0) {
+        rewardTokenIdsSource = 'opensea+onchain_logs';
+      } else if (discoveredTokenIdsOnchain.length > 0) {
+        rewardTokenIdsSource = 'onchain_logs';
+      } else if (discoveredTokenIdsOpenSea.length > 0) {
+        rewardTokenIdsSource = 'opensea';
+      }
     }
 
     if (rewardTokenIds.length === 0) {
       return res.status(400).json({
         ok: false,
-        error: 'No reward token IDs found. Set REWARD_ERC1155_TOKEN_IDS or ensure OpenSea can index treasury balances.'
+        error: 'No reward token IDs found. Set REWARD_ERC1155_TOKEN_IDS or configure reward token discovery scan.',
+        rewardTokenIdsSource,
+        openSeaDiscoveryError
       });
     }
 
@@ -307,7 +470,8 @@ export default async function handler(req, res) {
       rewardContractAddress,
       treasuryAddress,
       tokenIds: rewardTokenIds,
-      rewardCount: rewardNftsPerClaim
+      rewardCount: rewardNftsPerClaim,
+      selectionStrategy: rewardRandomStrategy
     });
 
     const transferIds = allocations.map((entry) => entry.tokenId);
@@ -359,8 +523,11 @@ export default async function handler(req, res) {
       blockNumber: receipt?.blockNumber ?? null,
       rewardContract: rewardContractAddress,
       rewardNftsPerClaim,
+      rewardRandomStrategy,
       rewardTokenIdsSource,
       rewardTokenIdsUsed: rewardTokenIds.map((value) => value.toString()),
+      discoveredTokenIdsOpenSeaCount: discoveredTokenIdsOpenSea.length,
+      discoveredTokenIdsOnchainCount: discoveredTokenIdsOnchain.length,
       allocations: allocations.map((entry) => ({
         tokenId: entry.tokenId.toString(),
         amount: entry.amount.toString()

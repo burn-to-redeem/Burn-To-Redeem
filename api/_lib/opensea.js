@@ -137,7 +137,7 @@ export async function fetchOpenSeaWalletContractNfts({
   const normalizedWallet = ethers.getAddress(walletAddress);
   const normalizedContract = ethers.getAddress(contractAddress).toLowerCase();
   const pageSize = clampInt(perPage, 50, 1, 200);
-  const itemCap = clampInt(maxItems, 250, 1, 2000);
+  const itemCap = clampInt(maxItems, 250, 1, 20000);
   const collected = [];
   const seen = new Set();
 

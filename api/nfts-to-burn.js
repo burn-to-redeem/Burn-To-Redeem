@@ -42,7 +42,7 @@ export default async function handler(req, res) {
       apiKey,
       mcpToken,
       perPage: 80,
-      maxItems: Number.isInteger(max) && max > 0 ? Math.min(max, 1000) : 80,
+      maxItems: Number.isInteger(max) && max > 0 ? Math.min(max, 20000) : 80,
       timeoutMs: 12000
     });
 
