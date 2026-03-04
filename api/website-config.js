@@ -20,14 +20,14 @@ export default async function handler(req, res) {
         accessTitle: clean(runtime.websiteAccessTitle, 'Burn to Redeem Access'),
         accessSubtitle: clean(
           runtime.websiteAccessSubtitle,
-          'Sign once for token-gate access, then sign again to claim random rewards before entering the burn website.'
+          'Sign once for token-gate access. Claim rewards later from the Redeemable Rewards tab inside the website.'
         ),
         step1Title: clean(runtime.websiteStep1Title, 'Step 1: Token-Gated Signature'),
         step1Subtitle: clean(runtime.websiteStep1Subtitle, 'Connect on Base and sign to prove ownership of the gate NFT.'),
-        step2Title: clean(runtime.websiteStep2Title, 'Step 2: Claim 20 Random Reward NFTs'),
+        step2Title: clean(runtime.websiteStep2Title, 'Step 2: Claim Rewards In Redeemable Rewards Tab'),
         step2Subtitle: clean(
           runtime.websiteStep2Subtitle,
-          'Sign again to receive a random 20-NFT allocation from treasury wallet.'
+          'After entry, open Redeemable Rewards and sign to claim your random NFT allocation.'
         ),
         burnHeroSubtitle: clean(
           runtime.websiteBurnHeroSubtitle,

@@ -17,6 +17,7 @@ export const EDITABLE_OVERRIDE_KEYS = [
   'GATE_PASS_TTL_SECONDS',
   'TREASURY_WALLET_ADDRESS',
   'REWARD_ERC1155_CONTRACT',
+  'REWARD_COLLECTION_SLUG',
   'REWARD_ERC1155_TOKEN_IDS',
   'REWARD_NFTS_PER_CLAIM',
   'REWARD_RANDOM_STRATEGY',
@@ -65,6 +66,7 @@ const DEFAULT_EDITABLE_CONFIG = {
   GATE_PASS_TTL_SECONDS: process.env.GATE_PASS_TTL_SECONDS || '900',
   TREASURY_WALLET_ADDRESS: process.env.TREASURY_WALLET_ADDRESS || '',
   REWARD_ERC1155_CONTRACT: process.env.REWARD_ERC1155_CONTRACT || '',
+  REWARD_COLLECTION_SLUG: process.env.REWARD_COLLECTION_SLUG || 'cc0-by-pierre',
   REWARD_ERC1155_TOKEN_IDS: process.env.REWARD_ERC1155_TOKEN_IDS || '',
   REWARD_NFTS_PER_CLAIM: process.env.REWARD_NFTS_PER_CLAIM || '20',
   REWARD_RANDOM_STRATEGY: process.env.REWARD_RANDOM_STRATEGY || 'token_uniform',
@@ -88,13 +90,14 @@ const DEFAULT_EDITABLE_CONFIG = {
   WEBSITE_ACCESS_TITLE: process.env.WEBSITE_ACCESS_TITLE || 'Burn to Redeem Access',
   WEBSITE_ACCESS_SUBTITLE:
     process.env.WEBSITE_ACCESS_SUBTITLE ||
-    'Sign once for token-gate access, then sign again to claim random rewards before entering the burn website.',
+    'Sign once for token-gate access. Claim rewards later from the Redeemable Rewards tab inside the website.',
   WEBSITE_STEP1_TITLE: process.env.WEBSITE_STEP1_TITLE || 'Step 1: Token-Gated Signature',
   WEBSITE_STEP1_SUBTITLE:
     process.env.WEBSITE_STEP1_SUBTITLE || 'Connect on Base and sign to prove ownership of the gate NFT.',
-  WEBSITE_STEP2_TITLE: process.env.WEBSITE_STEP2_TITLE || 'Step 2: Claim 20 Random Reward NFTs',
+  WEBSITE_STEP2_TITLE: process.env.WEBSITE_STEP2_TITLE || 'Step 2: Claim Rewards In Redeemable Rewards Tab',
   WEBSITE_STEP2_SUBTITLE:
-    process.env.WEBSITE_STEP2_SUBTITLE || 'Sign again to receive a random 20-NFT allocation from treasury wallet.',
+    process.env.WEBSITE_STEP2_SUBTITLE ||
+    'After entry, open Redeemable Rewards and sign to claim your random NFT allocation.',
   WEBSITE_BURN_HERO_SUBTITLE:
     process.env.WEBSITE_BURN_HERO_SUBTITLE || 'Burn your claimed rewards to stack credits and redeem premium drops.',
   WEBSITE_NFTS_TAB_LABEL: process.env.WEBSITE_NFTS_TAB_LABEL || 'NFTS TO BURN',
@@ -138,6 +141,7 @@ function buildRuntimeFromConfig(config, overrides, updatedAt) {
     gatePassTtlSeconds: parsePositiveInt(config.GATE_PASS_TTL_SECONDS, 900),
     treasuryWalletAddress: config.TREASURY_WALLET_ADDRESS,
     rewardErc1155Contract: config.REWARD_ERC1155_CONTRACT,
+    rewardCollectionSlug: config.REWARD_COLLECTION_SLUG || 'cc0-by-pierre',
     rewardErc1155TokenIds: config.REWARD_ERC1155_TOKEN_IDS,
     rewardNftsPerClaim: parsePositiveInt(config.REWARD_NFTS_PER_CLAIM, 20),
     rewardRandomStrategy: config.REWARD_RANDOM_STRATEGY || 'token_uniform',

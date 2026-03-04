@@ -1,11 +1,11 @@
 # Burn to Redeem Reward Claims + Website Access
 
-This app uses a two-signature flow:
+This app uses a gated-entry + manual-claim flow:
 
 1. Wallet signs a token-gate message (`/api/auth-gate`).
-2. Wallet signs a claim message (`/api/claim-reward`).
-3. Backend verifies both signatures and token-gate ownership, then transfers a random ERC-1155 reward batch from treasury wallet to claimant.
-4. User is routed into the burn website experience and can burn claimed rewards.
+2. User enters the burn website immediately after token-gate verification.
+3. In the `Redeemable Rewards` tab, wallet signs a claim message (`/api/claim-reward`) when ready to claim.
+4. Backend verifies signature + token-gate ownership, then transfers a random ERC-1155 reward batch from treasury wallet to claimant.
 
 ## Environment variables
 
@@ -21,6 +21,7 @@ Required:
 - `CLAIM_SIGNING_SECRET`
 - `TREASURY_PRIVATE_KEY`
 - `REWARD_ERC1155_CONTRACT`
+- `REWARD_COLLECTION_SLUG` (default `cc0-by-pierre`; rewards are discovered from this collection in treasury wallet)
 - `REWARD_ERC1155_TOKEN_IDS`
 - `REWARD_NFTS_PER_CLAIM` (set to `20` for the current reward policy)
 - `REWARD_RANDOM_STRATEGY` (`token_uniform` recommended for random distribution across token IDs, or `unit_weighted`)
@@ -57,6 +58,7 @@ Required:
 - `safeBatchTransferFrom` is used (one tx) and low-gas EIP-1559 overrides are applied when `REWARD_GAS_MODE=lowest`.
 - If a tx remains pending, retries reuse the same nonce with a fee bump for replacement until confirmation.
 - Current backend claim enforcement counts prior treasury transfer logs from `REWARD_CLAIM_START_BLOCK` to ensure a wallet cannot over-claim versus gated token units held.
+- For ERC-721 token gating, claim locking is now one-time per gate token ID by embedding gate-token claim context in reward transfer calldata and scanning claim history logs.
 - If `REWARD_ERC1155_TOKEN_IDS` is empty, the backend auto-discovers treasury-held token IDs from OpenSea plus on-chain transfer logs (from `REWARD_TOKEN_DISCOVERY_START_BLOCK`) before selecting random rewards.
 
 ## Admin backend login

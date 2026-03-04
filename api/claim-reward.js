@@ -8,10 +8,13 @@ import {
   normalizeAddress,
   parseJsonBody,
   parseRewardTokenIds,
-  pickRandomRewardAllocations,
-  verifyGatePass
+  pickRandomRewardAllocations
 } from './_lib/claimUtils.js';
-import { extractUniqueTokenIds, fetchOpenSeaWalletContractNfts } from './_lib/opensea.js';
+import {
+  extractUniqueTokenIds,
+  fetchOpenSeaWalletCollectionNfts,
+  fetchOpenSeaWalletContractNfts
+} from './_lib/opensea.js';
 import { getRuntimeConfigForRequest } from './_lib/runtimeOverrides.js';
 
 function requireEnv(name) {
@@ -43,6 +46,28 @@ function parseRewardRandomStrategy(value) {
 function parseGweiToWei(value, fallbackGwei) {
   const raw = String(value || fallbackGwei).trim();
   return ethers.parseUnits(raw, 'gwei');
+}
+
+function parseCsvBigIntIds(value) {
+  return String(value || '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => BigInt(entry));
+}
+
+function randomIndex(maxExclusive) {
+  if (!Number.isInteger(maxExclusive) || maxExclusive <= 0) {
+    throw new Error('maxExclusive must be a positive integer.');
+  }
+
+  const bytes = 4;
+  const max = 2 ** (bytes * 8);
+  while (true) {
+    const value = Number(`0x${Buffer.from(ethers.randomBytes(bytes)).toString('hex')}`);
+    const normalized = Math.floor((value / max) * maxExclusive);
+    if (normalized >= 0 && normalized < maxExclusive) return normalized;
+  }
 }
 
 function parseRpcUrls(value) {
@@ -201,6 +226,14 @@ const ERC1155_LOG_INTERFACE = new ethers.Interface([
   'event TransferBatch(address indexed operator, address indexed from, address indexed to, uint256[] ids, uint256[] values)'
 ]);
 const ERC1155_BALANCE_OF_ABI = ['function balanceOf(address account, uint256 id) view returns (uint256)'];
+const ERC721_GATE_TOKEN_ABI = [
+  'function balanceOf(address owner) view returns (uint256)',
+  'function ownerOf(uint256 tokenId) view returns (address)',
+  'function tokenOfOwnerByIndex(address owner, uint256 index) view returns (uint256)'
+];
+const ERC1155_TRANSFER_INTERFACE = new ethers.Interface(getErc1155TransferAbi());
+const CLAIM_CONTEXT_TAG = 'BURN_TO_REDEEM_GATE_TOKEN_V1';
+const CLAIM_CONTEXT_ABI = ethers.AbiCoder.defaultAbiCoder();
 
 function dedupeBigIntValues(values) {
   const seen = new Set();
@@ -216,6 +249,74 @@ function dedupeBigIntValues(values) {
 
 function sortBigIntValues(values) {
   return [...values].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+}
+
+function encodeClaimContextData({ gateTokenId }) {
+  if (gateTokenId === null || gateTokenId === undefined) return '0x';
+  return CLAIM_CONTEXT_ABI.encode(['string', 'uint256'], [CLAIM_CONTEXT_TAG, gateTokenId]);
+}
+
+function decodeClaimContextGateTokenId(data) {
+  if (!data || data === '0x') return null;
+  try {
+    const [tag, gateTokenId] = CLAIM_CONTEXT_ABI.decode(['string', 'uint256'], data);
+    if (String(tag || '') !== CLAIM_CONTEXT_TAG) return null;
+    return BigInt(gateTokenId.toString());
+  } catch {
+    return null;
+  }
+}
+
+function parseGateTokenConfigIds(runtime) {
+  const configuredIds = parseCsvBigIntIds(runtime.tokenGateTokenIds);
+  if (configuredIds.length > 0) return configuredIds;
+
+  const singleId = Number.parseInt(String(runtime.tokenGateTokenId || '0'), 10);
+  if (Number.isInteger(singleId) && singleId > 0) {
+    return [BigInt(singleId)];
+  }
+
+  return [];
+}
+
+async function getOwnedErc721GateTokenIds({ provider, walletAddress, runtime }) {
+  const gateContract = new ethers.Contract(runtime.tokenGateContract, ERC721_GATE_TOKEN_ABI, provider);
+  const configuredIds = parseGateTokenConfigIds(runtime);
+  const owned = [];
+
+  if (configuredIds.length > 0) {
+    for (const tokenId of configuredIds) {
+      try {
+        const owner = await gateContract.ownerOf(tokenId);
+        if (owner.toLowerCase() === walletAddress.toLowerCase()) {
+          owned.push(tokenId);
+        }
+      } catch {
+        // Ignore token IDs that revert on ownerOf.
+      }
+    }
+    return sortBigIntValues(owned);
+  }
+
+  let balance = 0n;
+  try {
+    balance = await gateContract.balanceOf(walletAddress);
+  } catch {
+    return [];
+  }
+
+  const cappedBalance = balance > 500n ? 500n : balance;
+  for (let i = 0n; i < cappedBalance; i += 1n) {
+    try {
+      const tokenId = await gateContract.tokenOfOwnerByIndex(walletAddress, i);
+      owned.push(BigInt(tokenId.toString()));
+    } catch {
+      // Contract likely does not support ERC721Enumerable.
+      return [];
+    }
+  }
+
+  return sortBigIntValues(dedupeBigIntValues(owned));
 }
 
 async function discoverRewardTokenIdsFromTreasuryLogs({
@@ -408,6 +509,102 @@ async function countWalletClaimsFromLogs({
   return count;
 }
 
+function parseClaimContextGateTokenIdFromTxData(data) {
+  if (!data || data === '0x') return null;
+
+  try {
+    const decoded = ERC1155_TRANSFER_INTERFACE.decodeFunctionData('safeBatchTransferFrom', data);
+    return decodeClaimContextGateTokenId(decoded[4]);
+  } catch {
+    // Not a safeBatchTransferFrom call.
+  }
+
+  try {
+    const decoded = ERC1155_TRANSFER_INTERFACE.decodeFunctionData('safeTransferFrom', data);
+    return decodeClaimContextGateTokenId(decoded[4]);
+  } catch {
+    return null;
+  }
+}
+
+async function collectClaimedGateTokenIdsFromRewardLogs({
+  rpcProviders,
+  runtime,
+  rewardContractAddress,
+  treasuryAddress,
+  startBlock,
+  step
+}) {
+  const claimedTokenIds = new Set();
+  const txHashes = new Set();
+  const latestBlock = await withRpcLogFailover({
+    rpcProviders,
+    runtime,
+    operation: 'Gate-token claim history latest block fetch',
+    run: (provider) => provider.getBlockNumber()
+  });
+
+  if (startBlock <= 0 || startBlock > latestBlock) {
+    return claimedTokenIds;
+  }
+
+  const transferSingleTopic = ethers.id('TransferSingle(address,address,address,uint256,uint256)');
+  const transferBatchTopic = ethers.id('TransferBatch(address,address,address,uint256[],uint256[])');
+  const fromTopic = ethers.zeroPadValue(treasuryAddress, 32);
+
+  for (let from = startBlock; from <= latestBlock; from += step) {
+    const to = Math.min(from + step - 1, latestBlock);
+    const [batchLogs, singleLogs] = await Promise.all([
+      withRpcLogFailover({
+        rpcProviders,
+        runtime,
+        operation: `Gate-token claim history TransferBatch logs (${from}-${to})`,
+        run: (provider) =>
+          provider.getLogs({
+            address: rewardContractAddress,
+            fromBlock: from,
+            toBlock: to,
+            topics: [transferBatchTopic, null, fromTopic]
+          })
+      }),
+      withRpcLogFailover({
+        rpcProviders,
+        runtime,
+        operation: `Gate-token claim history TransferSingle logs (${from}-${to})`,
+        run: (provider) =>
+          provider.getLogs({
+            address: rewardContractAddress,
+            fromBlock: from,
+            toBlock: to,
+            topics: [transferSingleTopic, null, fromTopic]
+          })
+      })
+    ]);
+
+    for (const log of [...batchLogs, ...singleLogs]) {
+      if (log?.transactionHash) {
+        txHashes.add(log.transactionHash.toLowerCase());
+      }
+    }
+  }
+
+  for (const txHash of txHashes) {
+    const tx = await withRpcLogFailover({
+      rpcProviders,
+      runtime,
+      operation: `Gate-token claim transaction decode (${txHash})`,
+      run: (provider) => provider.getTransaction(txHash)
+    });
+    if (!tx?.data) continue;
+
+    const gateTokenId = parseClaimContextGateTokenIdFromTxData(tx.data);
+    if (gateTokenId === null) continue;
+    claimedTokenIds.add(gateTokenId.toString());
+  }
+
+  return claimedTokenIds;
+}
+
 async function sendWithRetryEscalation({
   provider,
   signer,
@@ -487,8 +684,8 @@ export default async function handler(req, res) {
     const chainId = Number.parseInt(String(body.chainId || ''), 10);
     const issuedAt = Number(body.issuedAt || 0);
 
-    if (!signature || !gatePass) {
-      return res.status(400).json({ ok: false, error: 'Missing signature or gate pass.' });
+    if (!signature) {
+      return res.status(400).json({ ok: false, error: 'Missing signature.' });
     }
 
     if (chainId !== runtime.chainId) {
@@ -497,10 +694,6 @@ export default async function handler(req, res) {
 
     if (!isFreshIssuedAt(issuedAt, runtime.claimMessageTtlSeconds)) {
       return res.status(400).json({ ok: false, error: 'Claim signature expired. Please sign again.' });
-    }
-
-    if (!verifyGatePass(gatePass, address, runtime)) {
-      return res.status(401).json({ ok: false, error: 'Invalid or expired gate pass.' });
     }
 
     const message = buildClaimMessage({ address, chainId, issuedAt, gatePass });
@@ -535,6 +728,9 @@ export default async function handler(req, res) {
       rewardLogScanStep
     );
     const rewardTokenDiscoveryMaxItems = parsePositiveInt(runtime.rewardTokenDiscoveryMaxItems, 20000);
+    const rewardCollectionSlug = String(
+      runtime.rewardCollectionSlug || process.env.REWARD_COLLECTION_SLUG || 'cc0-by-pierre'
+    ).trim();
 
     if (!Number.isInteger(rewardNftsPerClaim) || rewardNftsPerClaim <= 0) {
       return res.status(400).json({ ok: false, error: 'REWARD_NFTS_PER_CLAIM must be a positive integer.' });
@@ -560,16 +756,28 @@ export default async function handler(req, res) {
 
     if (rewardTokenIds.length === 0) {
       try {
-        const openseaItems = await fetchOpenSeaWalletContractNfts({
-          walletAddress: treasuryAddress,
-          contractAddress: rewardContractAddress,
-          chainId: runtime.chainId,
-          apiKey: process.env.OPENSEA_API_KEY,
-          mcpToken: process.env.OPENSEA_MCP_TOKEN,
-          perPage: 80,
-          maxItems: rewardTokenDiscoveryMaxItems,
-          timeoutMs: 12000
-        });
+        const openseaItems = rewardCollectionSlug
+          ? await fetchOpenSeaWalletCollectionNfts({
+              walletAddress: treasuryAddress,
+              collectionSlug: rewardCollectionSlug,
+              contractAddress: rewardContractAddress,
+              chainId: runtime.chainId,
+              apiKey: process.env.OPENSEA_API_KEY,
+              mcpToken: process.env.OPENSEA_MCP_TOKEN,
+              perPage: 80,
+              maxItems: rewardTokenDiscoveryMaxItems,
+              timeoutMs: 12000
+            })
+          : await fetchOpenSeaWalletContractNfts({
+              walletAddress: treasuryAddress,
+              contractAddress: rewardContractAddress,
+              chainId: runtime.chainId,
+              apiKey: process.env.OPENSEA_API_KEY,
+              mcpToken: process.env.OPENSEA_MCP_TOKEN,
+              perPage: 80,
+              maxItems: rewardTokenDiscoveryMaxItems,
+              timeoutMs: 12000
+            });
         discoveredTokenIdsOpenSea = extractUniqueTokenIds(openseaItems.nfts).map((tokenId) => BigInt(tokenId));
       } catch (error) {
         openSeaDiscoveryError =
@@ -611,26 +819,76 @@ export default async function handler(req, res) {
     }
 
     const gateTokenUnits = await getTokenGateUnits(provider, address, runtime);
-    const maxClaimsAllowed = gateTokenUnits * BigInt(claimsPerGateToken);
-    const walletClaimCount = await countWalletClaimsFromLogs({
-      rpcProviders,
-      runtime,
-      rewardContractAddress,
-      treasuryAddress,
-      walletAddress: address,
-      startBlock: rewardClaimStartBlock,
-      step: rewardLogScanStep
-    });
+    const gateStandard = String(runtime.tokenGateStandard || 'erc721').trim().toLowerCase();
+    let maxClaimsAllowed = gateTokenUnits * BigInt(claimsPerGateToken);
+    let walletClaimCount = 0;
+    let selectedGateTokenId = null;
+    let gateTokenClaimMode = 'wallet_balance';
+    let unclaimedGateTokenIdsOwned = [];
 
-    if (BigInt(walletClaimCount) >= maxClaimsAllowed) {
-      return res.status(403).json({
-        ok: false,
-        error: 'Claim limit reached for this wallet. Acquire more gated tokens to claim again.',
-        gateTokenUnits: gateTokenUnits.toString(),
-        claimsPerGateToken: String(claimsPerGateToken),
-        maxClaimsAllowed: maxClaimsAllowed.toString(),
-        walletClaimCount: String(walletClaimCount)
+    if (gateStandard === 'erc721') {
+      const ownedGateTokenIds = await getOwnedErc721GateTokenIds({
+        provider,
+        walletAddress: address,
+        runtime
       });
+      if (ownedGateTokenIds.length === 0) {
+        return res.status(400).json({
+          ok: false,
+          error:
+            'Unable to resolve owned gate token IDs for ERC-721 claim locking. Configure TOKEN_GATE_TOKEN_IDS or use an enumerable gate contract.'
+        });
+      }
+
+      const claimedGateTokenIds = await collectClaimedGateTokenIdsFromRewardLogs({
+        rpcProviders,
+        runtime,
+        rewardContractAddress,
+        treasuryAddress,
+        startBlock: rewardClaimStartBlock,
+        step: rewardLogScanStep
+      });
+      unclaimedGateTokenIdsOwned = ownedGateTokenIds.filter(
+        (tokenId) => !claimedGateTokenIds.has(tokenId.toString())
+      );
+
+      maxClaimsAllowed = BigInt(ownedGateTokenIds.length);
+      walletClaimCount = ownedGateTokenIds.length - unclaimedGateTokenIdsOwned.length;
+      gateTokenClaimMode = 'erc721_token_id_once';
+
+      if (unclaimedGateTokenIdsOwned.length === 0) {
+        return res.status(403).json({
+          ok: false,
+          error: 'All currently held gate token IDs have already been used to claim rewards.',
+          gateTokenUnits: gateTokenUnits.toString(),
+          claimsPerGateToken: '1',
+          maxClaimsAllowed: maxClaimsAllowed.toString(),
+          walletClaimCount: String(walletClaimCount)
+        });
+      }
+
+      selectedGateTokenId = unclaimedGateTokenIdsOwned[randomIndex(unclaimedGateTokenIdsOwned.length)];
+    } else {
+      walletClaimCount = await countWalletClaimsFromLogs({
+        rpcProviders,
+        runtime,
+        rewardContractAddress,
+        treasuryAddress,
+        walletAddress: address,
+        startBlock: rewardClaimStartBlock,
+        step: rewardLogScanStep
+      });
+
+      if (BigInt(walletClaimCount) >= maxClaimsAllowed) {
+        return res.status(403).json({
+          ok: false,
+          error: 'Claim limit reached for this wallet. Acquire more gated tokens to claim again.',
+          gateTokenUnits: gateTokenUnits.toString(),
+          claimsPerGateToken: String(claimsPerGateToken),
+          maxClaimsAllowed: maxClaimsAllowed.toString(),
+          walletClaimCount: String(walletClaimCount)
+        });
+      }
     }
 
     const allocations = await pickRandomRewardAllocations({
@@ -657,7 +915,7 @@ export default async function handler(req, res) {
       address,
       transferIds,
       transferAmounts,
-      '0x'
+      encodeClaimContextData({ gateTokenId: selectedGateTokenId })
     ]);
 
     const nonce = await provider.getTransactionCount(treasuryAddress, 'pending');
@@ -706,6 +964,12 @@ export default async function handler(req, res) {
       claimsPerGateToken: String(claimsPerGateToken),
       maxClaimsAllowed: maxClaimsAllowed.toString(),
       walletClaimCountBefore: String(walletClaimCount),
+      gateTokenClaimMode,
+      claimedWithGateTokenId: selectedGateTokenId !== null ? selectedGateTokenId.toString() : null,
+      unclaimedGateTokenIdsOwned:
+        gateTokenClaimMode === 'erc721_token_id_once'
+          ? unclaimedGateTokenIdsOwned.map((value) => value.toString())
+          : [],
       from: treasuryAddress,
       to: address
     });

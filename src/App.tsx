@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowRight, Check, Flame, Gift, Info, LockKeyhole, Shield, Wallet, X, Zap } from 'lucide-react';
+import { ArrowRight, Check, Flame, Info, LockKeyhole, Shield, Wallet, X, Zap } from 'lucide-react';
 import { ethers } from 'ethers';
 import { NFT, Reward } from './types';
 
@@ -16,6 +16,8 @@ type ClaimResponse = {
   rewardNftsPerClaim?: number;
   rewardTokenIdsSource?: string;
   rewardTokenIdsUsed?: string[];
+  gateTokenClaimMode?: string;
+  claimedWithGateTokenId?: string | null;
   allocations?: ClaimAllocation[];
   error?: string;
 };
@@ -61,10 +63,14 @@ type WebsiteConfigResponse = {
 
 type BurnWebsiteProps = {
   walletAddress: string;
+  gatePass: string;
   claimResponse: ClaimResponse | null;
   claimedNfts: NFT[];
   websiteCopy: WebsiteCopy;
   entryMode: 'claim' | 'gate-only';
+  isClaimSigning: boolean;
+  claimError: string;
+  onClaimRewards: () => Promise<void>;
 };
 
 declare global {
@@ -113,11 +119,11 @@ const DEFAULT_WEBSITE_COPY: WebsiteCopy = {
   brandName: 'Burn to Redeem',
   accessTitle: 'Burn to Redeem Access',
   accessSubtitle:
-    'Sign once for token-gate access, then sign again to claim random rewards before entering the burn website.',
+    'Sign once for token-gate access. Claim rewards later from the Redeemable Rewards tab inside the website.',
   step1Title: 'Step 1: Token-Gated Signature',
   step1Subtitle: 'Connect on Base and sign to prove ownership of the gate NFT.',
-  step2Title: 'Step 2: Claim 20 Random Reward NFTs',
-  step2Subtitle: 'Sign again to receive a random 20-NFT allocation from treasury wallet.',
+  step2Title: 'Step 2: Claim Rewards In Redeemable Rewards Tab',
+  step2Subtitle: 'After entry, open Redeemable Rewards and sign to claim your random NFT allocation.',
   burnHeroSubtitle: 'Burn your claimed rewards to stack credits and redeem premium drops.',
   nftsTabLabel: 'NFTS TO BURN',
   rewardsTabLabel: 'REDEEMABLE REWARDS',
@@ -203,7 +209,17 @@ function mapBurnInventoryToNfts(items: BurnInventoryNft[]): NFT[] {
     .filter((item): item is NFT => item !== null);
 }
 
-function BurnWebsite({ walletAddress, claimResponse, claimedNfts, websiteCopy, entryMode }: BurnWebsiteProps) {
+function BurnWebsite({
+  walletAddress,
+  gatePass,
+  claimResponse,
+  claimedNfts,
+  websiteCopy,
+  entryMode,
+  isClaimSigning,
+  claimError,
+  onClaimRewards
+}: BurnWebsiteProps) {
   const [userNfts, setUserNfts] = useState<NFT[]>([]);
   const [balance, setBalance] = useState(0);
   const [selectedNft, setSelectedNft] = useState<NFT | null>(null);
@@ -616,6 +632,37 @@ function BurnWebsite({ walletAddress, claimResponse, claimedNfts, websiteCopy, e
               </div>
             </div>
 
+            <div className="mb-8 rounded-2xl border border-white/15 bg-neutral-900/70 p-5">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <div className="text-xs font-mono uppercase tracking-[0.16em] text-white/55">Manual Reward Claim</div>
+                  <div className="mt-2 text-sm text-white/85">
+                    {claimResponse?.ok
+                      ? `Claim completed${claimResponse.claimedWithGateTokenId ? ` with gate token #${claimResponse.claimedWithGateTokenId}` : ''}.`
+                      : gatePass
+                        ? 'Sign once here to claim rewards.'
+                        : 'Refresh gate access to claim rewards.'}
+                  </div>
+                </div>
+                <button
+                  onClick={onClaimRewards}
+                  disabled={!gatePass || isClaimSigning || Boolean(claimResponse?.ok)}
+                  className="rounded-lg bg-cyan-300 px-4 py-2 font-semibold text-black disabled:opacity-50"
+                >
+                  {claimResponse?.ok
+                    ? 'Rewards Claimed'
+                    : isClaimSigning
+                      ? 'Claiming...'
+                      : 'Sign & Claim Rewards'}
+                </button>
+              </div>
+              {claimError ? (
+                <div className="mt-4 rounded-lg border border-red-600/40 bg-red-900/20 px-3 py-2 text-sm text-red-200">
+                  {claimError}
+                </div>
+              ) : null}
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
               {MOCK_REWARDS.map((reward) => (
                 <div key={reward.id} className="glass-panel rounded-3xl overflow-hidden flex flex-col">
@@ -780,6 +827,8 @@ export default function App() {
       }
 
       setGatePass(body.gatePass);
+      setEntryMode('gate-only');
+      setEnteredWebsite(true);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Token gate signing failed';
       setError(message);
@@ -790,7 +839,6 @@ export default function App() {
 
   async function handleClaimSignature() {
     setError('');
-    setClaimResponse(null);
     setIsClaimSigning(true);
 
     try {
@@ -822,39 +870,17 @@ export default function App() {
       const body = (await response.json()) as ClaimResponse;
       if (!response.ok || !body?.ok) {
         const claimError = String(body?.error || '').trim();
-        if (response.status === 403 && /claim limit reached/i.test(claimError)) {
-          setClaimResponse(null);
-          setEntryMode('gate-only');
-          setEnteredWebsite(true);
-          return;
-        }
         throw new Error(claimError || 'Claim failed.');
       }
 
       setClaimResponse(body);
       setEntryMode('claim');
-      setEnteredWebsite(true);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Claim signature failed';
       setError(message);
     } finally {
       setIsClaimSigning(false);
     }
-  }
-
-  function handleEnterWebsiteWithoutClaim() {
-    setError('');
-    if (!gatePass) {
-      setError('Complete token-gate signature first.');
-      return;
-    }
-    if (isWrongNetwork) {
-      setError(`Wrong network. Switch to Base (chain ${TARGET_CHAIN_ID}) first.`);
-      return;
-    }
-    setClaimResponse(null);
-    setEntryMode('gate-only');
-    setEnteredWebsite(true);
   }
 
   const isConnected = Boolean(walletAddress);
@@ -864,10 +890,14 @@ export default function App() {
     return (
       <BurnWebsite
         walletAddress={walletAddress}
+        gatePass={gatePass}
         claimResponse={claimResponse}
         claimedNfts={claimedNfts}
         websiteCopy={websiteCopy}
         entryMode={entryMode}
+        isClaimSigning={isClaimSigning}
+        claimError={error}
+        onClaimRewards={handleClaimSignature}
       />
     );
   }
@@ -927,42 +957,6 @@ export default function App() {
             </div>
           )}
         </div>
-
-        {gatePass ? (
-          <div className="mt-4 space-y-4 rounded-xl border border-neutral-800 bg-neutral-900/60 p-5">
-            <div className="flex items-center gap-2">
-              <Gift className="w-5 h-5 text-cyan-300" />
-              <h2 className="text-lg font-semibold">{websiteCopy.step2Title}</h2>
-            </div>
-            <p className="text-sm text-neutral-400">{websiteCopy.step2Subtitle}</p>
-
-            <div className="flex flex-wrap gap-3">
-              <button
-                onClick={handleClaimSignature}
-                disabled={isClaimSigning || isWrongNetwork || Boolean(claimResponse?.ok)}
-                className="rounded-lg bg-cyan-300 px-4 py-2 font-semibold text-black disabled:opacity-50"
-              >
-                {claimResponse?.ok ? 'Rewards Claimed' : isClaimSigning ? 'Claiming...' : 'Sign & Claim Rewards'}
-              </button>
-              <button
-                onClick={handleEnterWebsiteWithoutClaim}
-                disabled={isClaimSigning || isWrongNetwork}
-                className="rounded-lg border border-neutral-600 px-4 py-2 font-semibold text-neutral-100 hover:bg-neutral-800 disabled:opacity-50"
-              >
-                Enter Website (Token-Gated)
-              </button>
-            </div>
-          </div>
-        ) : null}
-
-        {claimResponse?.ok ? (
-          <div className="mt-4 rounded-xl border border-emerald-600/40 bg-emerald-900/20 p-5 text-sm">
-            <div className="font-semibold text-emerald-200">Claim complete. Entering burn website...</div>
-            <div className="mt-2 text-emerald-100/90">
-              Claimed {claimResponse.rewardNftsPerClaim || claimedNfts.length} NFTs from treasury contract.
-            </div>
-          </div>
-        ) : null}
 
         {error ? (
           <div className="mt-4 rounded-xl border border-red-600/40 bg-red-900/20 p-4 text-sm text-red-200">{error}</div>
