@@ -1,7 +1,10 @@
 import crypto from 'node:crypto';
 import { ethers } from 'ethers';
 
-const ERC721_GATE_ABI = ['function balanceOf(address owner) view returns (uint256)'];
+const ERC721_GATE_ABI = [
+  'function balanceOf(address owner) view returns (uint256)',
+  'function ownerOf(uint256 tokenId) view returns (address)'
+];
 const ERC1155_GATE_ABI = ['function balanceOf(address account, uint256 id) view returns (uint256)'];
 const ERC1155_TRANSFER_ABI = [
   'function balanceOf(address account, uint256 id) view returns (uint256)',
@@ -154,6 +157,15 @@ export async function getTokenGateUnits(provider, walletAddress, config) {
       total += balance;
     }
     return total;
+  }
+
+  if (tokenGateTokenId > 0) {
+    try {
+      const owner = await gateContract.ownerOf(BigInt(tokenGateTokenId));
+      return owner.toLowerCase() === walletAddress.toLowerCase() ? 1n : 0n;
+    } catch {
+      return 0n;
+    }
   }
 
   const balance = await gateContract.balanceOf(walletAddress);
