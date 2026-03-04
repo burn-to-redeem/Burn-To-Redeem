@@ -1,9 +1,6 @@
 import { ethers } from 'ethers';
 import {
   assertConfiguredForGate,
-  BASE_RPC_URL,
-  CHAIN_ID,
-  GATE_MESSAGE_TTL_SECONDS,
   buildGateMessage,
   createGatePass,
   hasTokenGateAccess,
@@ -11,6 +8,7 @@ import {
   normalizeAddress,
   parseJsonBody
 } from './_lib/claimUtils.js';
+import { getRuntimeConfigForRequest } from './_lib/runtimeOverrides.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -19,7 +17,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    assertConfiguredForGate();
+    const runtime = await getRuntimeConfigForRequest(req);
+    assertConfiguredForGate(runtime);
 
     const body = parseJsonBody(req);
     const address = normalizeAddress(body.address);
@@ -31,11 +30,11 @@ export default async function handler(req, res) {
       return res.status(400).json({ ok: false, error: 'Missing signature' });
     }
 
-    if (chainId !== CHAIN_ID) {
-      return res.status(400).json({ ok: false, error: `Wrong chain. Expected ${CHAIN_ID}.` });
+    if (chainId !== runtime.chainId) {
+      return res.status(400).json({ ok: false, error: `Wrong chain. Expected ${runtime.chainId}.` });
     }
 
-    if (!isFreshIssuedAt(issuedAt, GATE_MESSAGE_TTL_SECONDS)) {
+    if (!isFreshIssuedAt(issuedAt, runtime.gateMessageTtlSeconds)) {
       return res.status(400).json({ ok: false, error: 'Gate signature expired. Please sign again.' });
     }
 
@@ -45,19 +44,19 @@ export default async function handler(req, res) {
       return res.status(401).json({ ok: false, error: 'Signature verification failed.' });
     }
 
-    const provider = new ethers.JsonRpcProvider(BASE_RPC_URL);
-    const hasAccess = await hasTokenGateAccess(provider, address);
+    const provider = new ethers.JsonRpcProvider(runtime.baseRpcUrl);
+    const hasAccess = await hasTokenGateAccess(provider, address, runtime);
 
     if (!hasAccess) {
       return res.status(403).json({ ok: false, error: 'Wallet does not hold the token-gated NFT.' });
     }
 
-    const gatePass = createGatePass(address);
+    const gatePass = createGatePass(address, runtime);
 
     return res.status(200).json({
       ok: true,
       gatePass,
-      expiresInSeconds: Number.parseInt(process.env.GATE_PASS_TTL_SECONDS || '900', 10)
+      expiresInSeconds: runtime.gatePassTtlSeconds
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unexpected server error';

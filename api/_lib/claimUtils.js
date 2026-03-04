@@ -1,17 +1,6 @@
 import crypto from 'node:crypto';
 import { ethers } from 'ethers';
 
-export const BASE_RPC_URL = process.env.BASE_RPC_URL || 'https://mainnet.base.org';
-export const CHAIN_ID = Number.parseInt(process.env.CHAIN_ID || '8453', 10);
-export const TOKEN_GATE_CONTRACT = (process.env.TOKEN_GATE_CONTRACT || '').trim();
-export const TOKEN_GATE_STANDARD = (process.env.TOKEN_GATE_STANDARD || 'erc721').trim().toLowerCase();
-export const TOKEN_GATE_TOKEN_ID = Number.parseInt(process.env.TOKEN_GATE_TOKEN_ID || '0', 10);
-export const TOKEN_GATE_TOKEN_IDS = (process.env.TOKEN_GATE_TOKEN_IDS || '').trim();
-export const GATE_MESSAGE_TTL_SECONDS = Number.parseInt(process.env.GATE_MESSAGE_TTL_SECONDS || '300', 10);
-export const CLAIM_MESSAGE_TTL_SECONDS = Number.parseInt(process.env.CLAIM_MESSAGE_TTL_SECONDS || '300', 10);
-export const GATE_PASS_TTL_SECONDS = Number.parseInt(process.env.GATE_PASS_TTL_SECONDS || '900', 10);
-export const CLAIM_SIGNING_SECRET = (process.env.CLAIM_SIGNING_SECRET || '').trim();
-
 const ERC721_GATE_ABI = ['function balanceOf(address owner) view returns (uint256)'];
 const ERC1155_GATE_ABI = ['function balanceOf(address account, uint256 id) view returns (uint256)'];
 const ERC1155_TRANSFER_ABI = [
@@ -36,8 +25,8 @@ function fromBase64Url(value) {
   return Buffer.from(value, 'base64url').toString('utf8');
 }
 
-function hmac(payload) {
-  return crypto.createHmac('sha256', CLAIM_SIGNING_SECRET).update(payload).digest('base64url');
+function hmac(payload, secret) {
+  return crypto.createHmac('sha256', secret).update(payload).digest('base64url');
 }
 
 export function parseJsonBody(req) {
@@ -57,11 +46,11 @@ export function normalizeAddress(address) {
   return ethers.getAddress(String(address || '').trim());
 }
 
-export function assertConfiguredForGate() {
-  if (!TOKEN_GATE_CONTRACT) {
+export function assertConfiguredForGate(config) {
+  if (!config?.tokenGateContract) {
     throw new Error('Missing TOKEN_GATE_CONTRACT env variable.');
   }
-  if (!CLAIM_SIGNING_SECRET) {
+  if (!config?.claimSigningSecret) {
     throw new Error('Missing CLAIM_SIGNING_SECRET env variable.');
   }
 }
@@ -92,26 +81,27 @@ export function isFreshIssuedAt(issuedAt, ttlSeconds) {
   return ageMs >= 0 && ageMs <= ttlSeconds * 1000;
 }
 
-export function createGatePass(address) {
+export function createGatePass(address, config) {
+  const gatePassTtlSeconds = Number(config?.gatePassTtlSeconds || 900);
   const payload = {
     sub: address.toLowerCase(),
     iat: Math.floor(Date.now() / 1000),
-    exp: Math.floor(Date.now() / 1000) + GATE_PASS_TTL_SECONDS,
+    exp: Math.floor(Date.now() / 1000) + gatePassTtlSeconds,
     nonce: crypto.randomBytes(8).toString('hex')
   };
 
   const payloadPart = toBase64Url(JSON.stringify(payload));
-  const signaturePart = hmac(payloadPart);
+  const signaturePart = hmac(payloadPart, String(config?.claimSigningSecret || ''));
   return `${payloadPart}.${signaturePart}`;
 }
 
-export function verifyGatePass(gatePass, expectedAddress) {
+export function verifyGatePass(gatePass, expectedAddress, config) {
   const value = String(gatePass || '');
   const parts = value.split('.');
   if (parts.length !== 2) return false;
 
   const [payloadPart, signaturePart] = parts;
-  const expectedSignature = hmac(payloadPart);
+  const expectedSignature = hmac(payloadPart, String(config?.claimSigningSecret || ''));
 
   const signatureBuffer = Buffer.from(signaturePart);
   const expectedBuffer = Buffer.from(expectedSignature);
@@ -137,20 +127,25 @@ export function verifyGatePass(gatePass, expectedAddress) {
   return true;
 }
 
-export async function hasTokenGateAccess(provider, walletAddress) {
+export async function hasTokenGateAccess(provider, walletAddress, config) {
+  const tokenGateContract = String(config?.tokenGateContract || '').trim();
+  const tokenGateStandard = String(config?.tokenGateStandard || 'erc721').trim().toLowerCase();
+  const tokenGateTokenId = Number.parseInt(String(config?.tokenGateTokenId || '0'), 10);
+  const tokenGateTokenIds = String(config?.tokenGateTokenIds || '').trim();
+
   const gateContract = new ethers.Contract(
-    TOKEN_GATE_CONTRACT,
-    TOKEN_GATE_STANDARD === 'erc1155' ? ERC1155_GATE_ABI : ERC721_GATE_ABI,
+    tokenGateContract,
+    tokenGateStandard === 'erc1155' ? ERC1155_GATE_ABI : ERC721_GATE_ABI,
     provider
   );
 
-  if (TOKEN_GATE_STANDARD === 'erc1155') {
-    const configuredIds = TOKEN_GATE_TOKEN_IDS
-      ? TOKEN_GATE_TOKEN_IDS.split(',')
+  if (tokenGateStandard === 'erc1155') {
+    const configuredIds = tokenGateTokenIds
+      ? tokenGateTokenIds.split(',')
           .map((value) => value.trim())
           .filter(Boolean)
           .map((value) => BigInt(value))
-      : [BigInt(TOKEN_GATE_TOKEN_ID)];
+      : [BigInt(tokenGateTokenId)];
 
     for (const tokenId of configuredIds) {
       const balance = await safeBalanceOf(gateContract, walletAddress, tokenId);

@@ -1,8 +1,5 @@
 import { ethers } from 'ethers';
 import {
-  BASE_RPC_URL,
-  CHAIN_ID,
-  CLAIM_MESSAGE_TTL_SECONDS,
   buildClaimMessage,
   getErc1155TransferAbi,
   hasTokenGateAccess,
@@ -13,6 +10,7 @@ import {
   pickRandomRewardAllocations,
   verifyGatePass
 } from './_lib/claimUtils.js';
+import { getRuntimeConfigForRequest } from './_lib/runtimeOverrides.js';
 
 function requireEnv(name) {
   const value = (process.env[name] || '').trim();
@@ -33,14 +31,14 @@ function parseGweiToWei(value, fallbackGwei) {
   return ethers.parseUnits(raw, 'gwei');
 }
 
-async function buildLowGasOverrides(provider) {
-  const mode = String(process.env.REWARD_GAS_MODE || 'lowest').trim().toLowerCase();
+async function buildLowGasOverrides(provider, runtime) {
+  const mode = String(runtime.rewardGasMode || 'lowest').trim().toLowerCase();
   if (mode !== 'lowest') return {};
 
   const feeData = await provider.getFeeData();
-  const minPriorityFeePerGas = parseGweiToWei(process.env.REWARD_MIN_PRIORITY_GWEI, '0.000001');
-  const baseFeeMultiplierBps = parsePositiveInt(process.env.REWARD_BASE_FEE_MULTIPLIER_BPS, 10000);
-  const gasPriceMultiplierBps = parsePositiveInt(process.env.REWARD_GAS_PRICE_MULTIPLIER_BPS, 10000);
+  const minPriorityFeePerGas = parseGweiToWei(runtime.rewardMinPriorityGwei, '0.000001');
+  const baseFeeMultiplierBps = parsePositiveInt(runtime.rewardBaseFeeMultiplierBps, 10000);
+  const gasPriceMultiplierBps = parsePositiveInt(runtime.rewardGasPriceMultiplierBps, 10000);
   const overrides = {};
 
   if (feeData.lastBaseFeePerGas !== null && feeData.lastBaseFeePerGas !== undefined) {
@@ -51,7 +49,7 @@ async function buildLowGasOverrides(provider) {
     overrides.gasPrice = (feeData.gasPrice * BigInt(gasPriceMultiplierBps)) / 10000n;
   }
 
-  const configuredGasLimit = Number.parseInt(String(process.env.REWARD_GAS_LIMIT || ''), 10);
+  const configuredGasLimit = Number.parseInt(String(runtime.rewardGasLimit || ''), 10);
   if (Number.isInteger(configuredGasLimit) && configuredGasLimit > 0) {
     overrides.gasLimit = configuredGasLimit;
   }
@@ -80,11 +78,12 @@ async function sendWithRetryEscalation({
   provider,
   signer,
   txRequest,
-  initialGasOverrides
+  initialGasOverrides,
+  runtime
 }) {
-  const retryAttempts = parsePositiveInt(process.env.REWARD_TX_RETRY_ATTEMPTS, 3);
-  const waitMs = parsePositiveInt(process.env.REWARD_TX_RETRY_WAIT_MS, 30000);
-  const bumpBps = parsePositiveInt(process.env.REWARD_RETRY_FEE_BUMP_BPS, 12500);
+  const retryAttempts = parsePositiveInt(runtime.rewardTxRetryAttempts, 3);
+  const waitMs = parsePositiveInt(runtime.rewardTxRetryWaitMs, 30000);
+  const bumpBps = parsePositiveInt(runtime.rewardRetryFeeBumpBps, 12500);
   const sentHashes = [];
 
   let feeOverrides = { ...initialGasOverrides };
@@ -146,6 +145,7 @@ export default async function handler(req, res) {
   }
 
   try {
+    const runtime = await getRuntimeConfigForRequest(req);
     const body = parseJsonBody(req);
     const address = normalizeAddress(body.address);
     const signature = String(body.signature || '');
@@ -157,15 +157,15 @@ export default async function handler(req, res) {
       return res.status(400).json({ ok: false, error: 'Missing signature or gate pass.' });
     }
 
-    if (chainId !== CHAIN_ID) {
-      return res.status(400).json({ ok: false, error: `Wrong chain. Expected ${CHAIN_ID}.` });
+    if (chainId !== runtime.chainId) {
+      return res.status(400).json({ ok: false, error: `Wrong chain. Expected ${runtime.chainId}.` });
     }
 
-    if (!isFreshIssuedAt(issuedAt, CLAIM_MESSAGE_TTL_SECONDS)) {
+    if (!isFreshIssuedAt(issuedAt, runtime.claimMessageTtlSeconds)) {
       return res.status(400).json({ ok: false, error: 'Claim signature expired. Please sign again.' });
     }
 
-    if (!verifyGatePass(gatePass, address)) {
+    if (!verifyGatePass(gatePass, address, runtime)) {
       return res.status(401).json({ ok: false, error: 'Invalid or expired gate pass.' });
     }
 
@@ -175,16 +175,16 @@ export default async function handler(req, res) {
       return res.status(401).json({ ok: false, error: 'Signature verification failed.' });
     }
 
-    const provider = new ethers.JsonRpcProvider(BASE_RPC_URL);
-    const hasAccess = await hasTokenGateAccess(provider, address);
+    const provider = new ethers.JsonRpcProvider(runtime.baseRpcUrl);
+    const hasAccess = await hasTokenGateAccess(provider, address, runtime);
     if (!hasAccess) {
       return res.status(403).json({ ok: false, error: 'Wallet no longer holds the token-gated NFT.' });
     }
 
-    const treasuryPrivateKey = requireEnv('TREASURY_PRIVATE_KEY');
-    const rewardContractAddress = normalizeAddress(requireEnv('REWARD_ERC1155_CONTRACT'));
-    const rewardTokenIds = parseRewardTokenIds(requireEnv('REWARD_ERC1155_TOKEN_IDS'));
-    const rewardNftsPerClaim = Number.parseInt(process.env.REWARD_NFTS_PER_CLAIM || '20', 10);
+    const treasuryPrivateKey = runtime.treasuryPrivateKey || requireEnv('TREASURY_PRIVATE_KEY');
+    const rewardContractAddress = normalizeAddress(runtime.rewardErc1155Contract || requireEnv('REWARD_ERC1155_CONTRACT'));
+    const rewardTokenIds = parseRewardTokenIds(runtime.rewardErc1155TokenIds || requireEnv('REWARD_ERC1155_TOKEN_IDS'));
+    const rewardNftsPerClaim = Number.parseInt(String(runtime.rewardNftsPerClaim || '20'), 10);
 
     if (!Number.isInteger(rewardNftsPerClaim) || rewardNftsPerClaim <= 0) {
       return res.status(400).json({ ok: false, error: 'REWARD_NFTS_PER_CLAIM must be a positive integer.' });
@@ -196,7 +196,7 @@ export default async function handler(req, res) {
 
     const treasurySigner = new ethers.Wallet(treasuryPrivateKey, provider);
     const treasuryAddress =
-      (process.env.TREASURY_WALLET_ADDRESS || '').trim() || treasurySigner.address;
+      String(runtime.treasuryWalletAddress || '').trim() || treasurySigner.address;
 
     if (treasuryAddress.toLowerCase() !== treasurySigner.address.toLowerCase()) {
       return res.status(500).json({ ok: false, error: 'TREASURY_WALLET_ADDRESS does not match TREASURY_PRIVATE_KEY.' });
@@ -218,7 +218,7 @@ export default async function handler(req, res) {
       getErc1155TransferAbi(),
       treasurySigner
     );
-    const txOverrides = await buildLowGasOverrides(provider);
+    const txOverrides = await buildLowGasOverrides(provider, runtime);
 
     const transferData = rewardContract.interface.encodeFunctionData('safeBatchTransferFrom', [
       treasuryAddress,
@@ -229,13 +229,13 @@ export default async function handler(req, res) {
     ]);
 
     const nonce = await provider.getTransactionCount(treasuryAddress, 'pending');
-    const estimateFrom = String(process.env.REWARD_ESTIMATE_FROM || treasuryAddress).trim();
+    const estimateFrom = String(runtime.rewardEstimateFrom || treasuryAddress).trim();
     const estimatedGas = await provider.estimateGas({
       from: estimateFrom,
       to: rewardContractAddress,
       data: transferData
     });
-    const gasLimitMultiplierBps = parsePositiveInt(process.env.REWARD_GAS_LIMIT_MULTIPLIER_BPS, 12000);
+    const gasLimitMultiplierBps = parsePositiveInt(runtime.rewardGasLimitMultiplierBps, 12000);
     const gasLimit = bumpByBps(estimatedGas, gasLimitMultiplierBps);
 
     const txRequest = {
@@ -249,7 +249,8 @@ export default async function handler(req, res) {
       provider,
       signer: treasurySigner,
       txRequest,
-      initialGasOverrides: txOverrides
+      initialGasOverrides: txOverrides,
+      runtime
     });
 
     return res.status(200).json({

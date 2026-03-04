@@ -29,6 +29,11 @@ Required:
 - `REWARD_TX_RETRY_ATTEMPTS`
 - `REWARD_TX_RETRY_WAIT_MS`
 - `REWARD_RETRY_FEE_BUMP_BPS`
+- `ADMIN_USERNAME`
+- `ADMIN_PASSWORD`
+- `ADMIN_SESSION_SECRET`
+- `ADMIN_SESSION_TTL_SECONDS`
+- `RUNTIME_CONFIG_INTERNAL_SECRET`
 
 ## Security notes
 
@@ -37,6 +42,18 @@ Required:
 - For high-value rewards, move to contract-based allowlists/nonces and persistent claim tracking.
 - `safeBatchTransferFrom` is used (one tx) and low-gas EIP-1559 overrides are applied when `REWARD_GAS_MODE=lowest`.
 - If a tx remains pending, retries reuse the same nonce with a fee bump for replacement until confirmation.
+
+## Admin backend login
+
+Admin auth endpoints:
+
+- `POST /api/admin/login` with `{ \"username\": \"...\", \"password\": \"...\" }`
+- `GET /api/admin/config` to read effective runtime config
+- `PUT /api/admin/config` to update editable runtime config keys
+- `DELETE /api/admin/config` to clear overrides
+- `POST /api/admin/logout` to clear admin session
+
+Note: runtime overrides are stored in serverless runtime storage and may reset when instances restart. Use Vercel env vars for durable defaults.
 
 ## Local development
 
