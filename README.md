@@ -16,6 +16,8 @@ Required:
 - `TOKEN_GATE_CONTRACT`
 - `TOKEN_GATE_STANDARD` (`erc721` or `erc1155`)
 - `TOKEN_GATE_TOKEN_ID` (single `erc1155` gate token ID) or `TOKEN_GATE_TOKEN_IDS` (comma-separated IDs)
+- `VITE_BURN_COLLECTION_SLUG` (frontend burn gallery collection slug, default `cc0-by-pierre`)
+- `BURN_COLLECTION_SLUG` (server default collection slug used by `/api/nfts-to-burn`)
 - `CLAIM_SIGNING_SECRET`
 - `TREASURY_PRIVATE_KEY`
 - `REWARD_ERC1155_CONTRACT`
@@ -91,5 +93,5 @@ Deploy to Vercel and set env vars in the project dashboard.
 
 ## Burn inventory gallery
 
-- UI includes a `NFTS TO BURN` tab that loads wallet inventory from `GET /api/nfts-to-burn` (OpenSea-backed, server-side key only).
-- The gallery is filtered to the configured reward ERC-1155 contract and shown in a card grid ready for burn selection.
+- UI includes a `NFTS TO BURN` tab that loads wallet inventory from `GET /api/nfts-to-burn` (OpenSea-backed, server-side key only), filtered by `cc0-by-pierre` by default.
+- Optional contract filtering still applies when a reward contract is configured, and the gallery is shown in a card grid ready for burn selection.

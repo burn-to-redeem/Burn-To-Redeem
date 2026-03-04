@@ -1,5 +1,5 @@
 import { ethers } from 'ethers';
-import { fetchOpenSeaWalletContractNfts } from './_lib/opensea.js';
+import { fetchOpenSeaWalletCollectionNfts, fetchOpenSeaWalletContractNfts } from './_lib/opensea.js';
 import { getRuntimeConfigForRequest } from './_lib/runtimeOverrides.js';
 
 function normalizeAddress(value, fieldName) {
@@ -23,10 +23,14 @@ export default async function handler(req, res) {
     const url = new URL(req.url || '/api/nfts-to-burn', `${protocol}://${host}`);
 
     const address = normalizeAddress(url.searchParams.get('address'), 'wallet address');
+    const collectionSlug = String(url.searchParams.get('collection') || process.env.BURN_COLLECTION_SLUG || 'cc0-by-pierre').trim();
     const configuredRewardContract =
       String(runtime.rewardErc1155Contract || process.env.REWARD_ERC1155_CONTRACT || '').trim();
-    const contractParam = String(url.searchParams.get('contract') || configuredRewardContract).trim();
-    const contractAddress = normalizeAddress(contractParam, 'reward contract');
+    const hasCollection = Boolean(collectionSlug);
+    const contractParam = String(
+      url.searchParams.get('contract') || (hasCollection ? '' : configuredRewardContract)
+    ).trim();
+    const contractAddress = contractParam ? normalizeAddress(contractParam, 'reward contract') : '';
     const max = Number.parseInt(String(url.searchParams.get('max') || '80'), 10);
 
     const apiKey = (process.env.OPENSEA_API_KEY || '').trim();
@@ -35,22 +39,36 @@ export default async function handler(req, res) {
       return res.status(500).json({ ok: false, error: 'Missing OPENSEA_API_KEY or OPENSEA_MCP_TOKEN.' });
     }
 
-    const result = await fetchOpenSeaWalletContractNfts({
-      walletAddress: address,
-      contractAddress,
-      chainId: runtime.chainId,
-      apiKey,
-      mcpToken,
-      perPage: 80,
-      maxItems: Number.isInteger(max) && max > 0 ? Math.min(max, 20000) : 80,
-      timeoutMs: 12000
-    });
+    const maxItems = Number.isInteger(max) && max > 0 ? Math.min(max, 20000) : 80;
+    const result = hasCollection
+      ? await fetchOpenSeaWalletCollectionNfts({
+          walletAddress: address,
+          collectionSlug,
+          contractAddress,
+          chainId: runtime.chainId,
+          apiKey,
+          mcpToken,
+          perPage: 80,
+          maxItems,
+          timeoutMs: 12000
+        })
+      : await fetchOpenSeaWalletContractNfts({
+          walletAddress: address,
+          contractAddress,
+          chainId: runtime.chainId,
+          apiKey,
+          mcpToken,
+          perPage: 80,
+          maxItems,
+          timeoutMs: 12000
+        });
 
     return res.status(200).json({
       ok: true,
       chain: result.chain,
       walletAddress: result.walletAddress,
       contractAddress: result.contractAddress,
+      collection: hasCollection ? collectionSlug : '',
       strategy: result.strategy,
       total: result.nfts.length,
       nfts: result.nfts

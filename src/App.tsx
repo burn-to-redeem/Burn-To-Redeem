@@ -80,33 +80,7 @@ declare global {
 const TARGET_CHAIN_ID = Number(import.meta.env.VITE_BASE_CHAIN_ID || 8453);
 const TOKEN_GATE_CONTRACT = String(import.meta.env.VITE_TOKEN_GATE_CONTRACT || '');
 const REWARD_CONTRACT = String(import.meta.env.VITE_REWARD_ERC1155_CONTRACT || '');
-
-const FALLBACK_NFTS: NFT[] = [
-  {
-    id: 'fallback-1',
-    name: 'CYBER_PUNK #001',
-    collection: 'NEON_DISTRICT',
-    image: 'https://picsum.photos/seed/cyber1/400/400',
-    rarity: 'Legendary',
-    burnValue: 500
-  },
-  {
-    id: 'fallback-2',
-    name: 'VOID_WALKER #442',
-    collection: 'ETHEREAL',
-    image: 'https://picsum.photos/seed/void1/400/400',
-    rarity: 'Rare',
-    burnValue: 150
-  },
-  {
-    id: 'fallback-3',
-    name: 'GLITCH_SOUL #012',
-    collection: 'DIGITAL_DECAY',
-    image: 'https://picsum.photos/seed/glitch1/400/400',
-    rarity: 'Common',
-    burnValue: 50
-  }
-];
+const BURN_COLLECTION_SLUG = String(import.meta.env.VITE_BURN_COLLECTION_SLUG || 'cc0-by-pierre').trim();
 
 const MOCK_REWARDS: Reward[] = [
   {
@@ -221,7 +195,7 @@ function mapBurnInventoryToNfts(items: BurnInventoryNft[]): NFT[] {
         id: `${item.contractAddress.toLowerCase()}-${item.tokenId}-${index}`,
         name: item.name || `TREASURE #${item.tokenId}`,
         collection: item.collectionName || item.collection || 'TREASURY_DROP',
-        image: item.displayImageUrl || item.imageUrl || `https://picsum.photos/seed/reward-${item.tokenId}-${index}/400/400`,
+        image: item.displayImageUrl || item.imageUrl || '',
         rarity: rarityFromToken(tokenIdNum),
         burnValue: burnValueFromToken(tokenIdNum)
       } as NFT;
@@ -230,7 +204,7 @@ function mapBurnInventoryToNfts(items: BurnInventoryNft[]): NFT[] {
 }
 
 function BurnWebsite({ walletAddress, claimResponse, claimedNfts, websiteCopy, entryMode }: BurnWebsiteProps) {
-  const [userNfts, setUserNfts] = useState<NFT[]>(claimedNfts.length > 0 ? claimedNfts : FALLBACK_NFTS);
+  const [userNfts, setUserNfts] = useState<NFT[]>([]);
   const [balance, setBalance] = useState(0);
   const [selectedNft, setSelectedNft] = useState<NFT | null>(null);
   const [isBurning, setIsBurning] = useState(false);
@@ -248,21 +222,24 @@ function BurnWebsite({ walletAddress, claimResponse, claimedNfts, websiteCopy, e
       setInventoryNote('');
 
       try {
-        const contractAddress = claimResponse?.rewardContract || REWARD_CONTRACT;
-        if (!walletAddress || !contractAddress) {
+        if (!walletAddress) {
           if (!cancelled) {
-            const fallback = claimedNfts.length > 0 ? claimedNfts : FALLBACK_NFTS;
-            setUserNfts(fallback);
-            if (!contractAddress) {
-              setInventoryNote('Reward contract not configured for OpenSea inventory sync.');
-            }
+            setUserNfts([]);
+            setInventoryNote('Connect a wallet to load OpenSea inventory.');
           }
           return;
         }
 
-        const response = await fetch(
-          `/api/nfts-to-burn?address=${encodeURIComponent(walletAddress)}&contract=${encodeURIComponent(contractAddress)}&max=2000`
-        );
+        const query = new URLSearchParams();
+        query.set('address', walletAddress);
+        query.set('max', '2000');
+        if (BURN_COLLECTION_SLUG) {
+          query.set('collection', BURN_COLLECTION_SLUG);
+        } else if (claimResponse?.rewardContract || REWARD_CONTRACT) {
+          query.set('contract', claimResponse?.rewardContract || REWARD_CONTRACT);
+        }
+
+        const response = await fetch(`/api/nfts-to-burn?${query.toString()}`);
         const body = (await response.json().catch(() => ({}))) as BurnInventoryResponse;
 
         if (!response.ok || !body.ok) {
@@ -273,17 +250,23 @@ function BurnWebsite({ walletAddress, claimResponse, claimedNfts, websiteCopy, e
         if (!cancelled) {
           if (fromOpenSea.length > 0) {
             setUserNfts(fromOpenSea);
-            setInventoryNote(`OpenSea synced ${fromOpenSea.length} NFT(s) to burn.`);
+            setInventoryNote(
+              BURN_COLLECTION_SLUG
+                ? `OpenSea synced ${fromOpenSea.length} NFT(s) from ${BURN_COLLECTION_SLUG}.`
+                : `OpenSea synced ${fromOpenSea.length} NFT(s) to burn.`
+            );
           } else {
-            const fallback = claimedNfts.length > 0 ? claimedNfts : FALLBACK_NFTS;
-            setUserNfts(fallback);
-            setInventoryNote('No burnable NFTs found on OpenSea for this wallet and contract.');
+            setUserNfts([]);
+            setInventoryNote(
+              BURN_COLLECTION_SLUG
+                ? `No NFTs from ${BURN_COLLECTION_SLUG} found in this wallet.`
+                : 'No burnable NFTs found on OpenSea for this wallet.'
+            );
           }
         }
       } catch (error) {
         if (!cancelled) {
-          const fallback = claimedNfts.length > 0 ? claimedNfts : FALLBACK_NFTS;
-          setUserNfts(fallback);
+          setUserNfts([]);
           setInventoryNote(error instanceof Error ? error.message : 'OpenSea inventory sync unavailable.');
         }
       } finally {
@@ -296,7 +279,7 @@ function BurnWebsite({ walletAddress, claimResponse, claimedNfts, websiteCopy, e
     return () => {
       cancelled = true;
     };
-  }, [walletAddress, claimResponse?.rewardContract, claimedNfts]);
+  }, [walletAddress, claimResponse?.rewardContract]);
 
   useEffect(() => {
     if (activeTab !== 'nfts') {
@@ -517,12 +500,18 @@ function BurnWebsite({ walletAddress, claimResponse, claimedNfts, websiteCopy, e
                       className={`group relative cursor-pointer rounded-2xl overflow-hidden brutalist-border ${selectedNft?.id === nft.id ? 'border-white ring-2 ring-white/20' : ''}`}
                     >
                       <div className="aspect-square overflow-hidden bg-neutral-900">
-                        <img
-                          src={nft.image}
-                          alt={nft.name}
-                          className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-700 group-hover:scale-110"
-                          referrerPolicy="no-referrer"
-                        />
+                        {nft.image ? (
+                          <img
+                            src={nft.image}
+                            alt={nft.name}
+                            className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-700 group-hover:scale-110"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <div className="w-full h-full bg-gradient-to-br from-neutral-800 to-neutral-900 flex items-center justify-center text-xs text-neutral-400 font-mono uppercase">
+                            No Image
+                          </div>
+                        )}
                       </div>
 
                       <div className="p-6 bg-black/80 backdrop-blur-sm absolute bottom-0 left-0 right-0 border-t border-white/10">
@@ -566,7 +555,13 @@ function BurnWebsite({ walletAddress, claimResponse, claimedNfts, websiteCopy, e
               <div className="bg-white text-black p-6 rounded-2xl shadow-2xl flex items-center justify-between gap-8">
                 <div className="flex items-center gap-4">
                   <div className="w-16 h-16 rounded-lg overflow-hidden flex-shrink-0">
-                    <img src={selectedNft.image} alt="" className="w-full h-full object-cover grayscale" referrerPolicy="no-referrer" />
+                    {selectedNft.image ? (
+                      <img src={selectedNft.image} alt="" className="w-full h-full object-cover grayscale" referrerPolicy="no-referrer" />
+                    ) : (
+                      <div className="w-full h-full bg-neutral-200 text-[9px] font-mono uppercase flex items-center justify-center text-neutral-500">
+                        No Image
+                      </div>
+                    )}
                   </div>
                   <div>
                     <div className="text-xs font-mono uppercase tracking-widest opacity-50">Initiate Burn</div>

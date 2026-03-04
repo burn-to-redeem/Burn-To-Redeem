@@ -194,6 +194,92 @@ export async function fetchOpenSeaWalletContractNfts({
   };
 }
 
+export async function fetchOpenSeaWalletCollectionNfts({
+  walletAddress,
+  collectionSlug,
+  contractAddress = '',
+  chainId,
+  apiKey,
+  mcpToken,
+  perPage = 50,
+  maxItems = 250,
+  timeoutMs = 12000
+}) {
+  const chain = inferOpenSeaChainFromChainId(chainId);
+  const normalizedWallet = ethers.getAddress(walletAddress);
+  const cleanedCollectionSlug = cleanString(collectionSlug);
+  if (!cleanedCollectionSlug) {
+    throw new Error('Missing collection slug.');
+  }
+
+  const normalizedContract = cleanString(contractAddress)
+    ? ethers.getAddress(contractAddress).toLowerCase()
+    : '';
+  const pageSize = clampInt(perPage, 50, 1, 200);
+  const itemCap = clampInt(maxItems, 250, 1, 20000);
+  const collected = [];
+  const seen = new Set();
+
+  function matchesLocalFilter(item) {
+    if (item.collection !== cleanedCollectionSlug) return false;
+    if (normalizedContract && item.contractAddress.toLowerCase() !== normalizedContract) return false;
+    return true;
+  }
+
+  async function collect(strategy, queryCollection, localFilter) {
+    let next = '';
+
+    while (true) {
+      const url = buildWalletNftsUrl({
+        chain,
+        walletAddress: normalizedWallet,
+        limit: pageSize,
+        next,
+        collection: queryCollection || ''
+      });
+      const payload = await fetchOpenSeaJson(url, { apiKey, mcpToken, timeoutMs });
+      const nfts = Array.isArray(payload?.nfts) ? payload.nfts : [];
+
+      for (const raw of nfts) {
+        const item = normalizeNft(raw, chain);
+        if (!item.tokenId) continue;
+        if (localFilter && !matchesLocalFilter(item)) continue;
+
+        const key = `${item.contractAddress.toLowerCase()}:${item.tokenId}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        collected.push(item);
+        if (collected.length >= itemCap) {
+          return { strategy, next: cleanString(payload?.next) };
+        }
+      }
+
+      next = cleanString(payload?.next);
+      if (!next) {
+        return { strategy, next: '' };
+      }
+    }
+  }
+
+  let strategyUsed = 'collection-slug';
+  try {
+    const result = await collect('collection-slug', cleanedCollectionSlug, false);
+    strategyUsed = result.strategy;
+  } catch {
+    const result = await collect('wallet-local-collection-filter', '', true);
+    strategyUsed = result.strategy;
+  }
+
+  return {
+    chain,
+    walletAddress: normalizedWallet,
+    collection: cleanedCollectionSlug,
+    contractAddress: normalizedContract,
+    strategy: strategyUsed,
+    nfts: collected
+  };
+}
+
 export function extractUniqueTokenIds(items) {
   const set = new Set();
   for (const item of items || []) {
