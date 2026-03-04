@@ -21,6 +21,9 @@ Required:
 - `REWARD_ERC1155_CONTRACT`
 - `REWARD_ERC1155_TOKEN_IDS`
 - `REWARD_NFTS_PER_CLAIM` (set to `20` for the current reward policy)
+- `CLAIMS_PER_GATE_TOKEN` (set to `1` to allow one reward claim per gated token unit)
+- `REWARD_CLAIM_START_BLOCK` (required for claim limit enforcement; set this to the deployment block for reward claims)
+- `REWARD_LOG_SCAN_STEP` (default `9000`; lower if RPC log queries time out)
 - `REWARD_GAS_MODE` (`lowest` recommended)
 - `REWARD_MIN_PRIORITY_GWEI`
 - `REWARD_BASE_FEE_MULTIPLIER_BPS`
@@ -29,7 +32,6 @@ Required:
 - `REWARD_TX_RETRY_ATTEMPTS`
 - `REWARD_TX_RETRY_WAIT_MS`
 - `REWARD_RETRY_FEE_BUMP_BPS`
-- `ADMIN_USERNAME`
 - `ADMIN_PASSWORD`
 - `ADMIN_SESSION_SECRET`
 - `ADMIN_SESSION_TTL_SECONDS`
@@ -39,15 +41,16 @@ Required:
 
 - Keep `TREASURY_PRIVATE_KEY` server-side only.
 - Use a dedicated treasury wallet with limited funds.
-- For high-value rewards, move to contract-based allowlists/nonces and persistent claim tracking.
+- For high-value rewards, the best long-term design is an on-chain claim registry/distributor contract that tracks per-wallet claim usage against gated balance.
 - `safeBatchTransferFrom` is used (one tx) and low-gas EIP-1559 overrides are applied when `REWARD_GAS_MODE=lowest`.
 - If a tx remains pending, retries reuse the same nonce with a fee bump for replacement until confirmation.
+- Current backend claim enforcement counts prior treasury transfer logs from `REWARD_CLAIM_START_BLOCK` to ensure a wallet cannot over-claim versus gated token units held.
 
 ## Admin backend login
 
 Admin auth endpoints:
 
-- `POST /api/admin/login` with `{ \"username\": \"...\", \"password\": \"...\" }`
+- `POST /api/admin/login` with `{ \"password\": \"...\" }`
 - `GET /api/admin/config` to read effective runtime config
 - `PUT /api/admin/config` to update editable runtime config keys
 - `DELETE /api/admin/config` to clear overrides

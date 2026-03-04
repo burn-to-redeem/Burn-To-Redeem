@@ -10,12 +10,8 @@ function getSessionSecret() {
   );
 }
 
-function getAdminUsername() {
-  return (process.env.ADMIN_USERNAME || 'admin').trim();
-}
-
 function getAdminPassword() {
-  return (process.env.ADMIN_PASSWORD || '').trim();
+  return (process.env.ADMIN_PASSWORD || 'RoyalAscot2030').trim();
 }
 
 function getSessionTtlSeconds() {
@@ -76,11 +72,11 @@ export function clearAdminSession(res) {
   res.setHeader('Set-Cookie', sessionCookieHeader('', 0));
 }
 
-export function createAdminSession(res, username) {
+export function createAdminSession(res, user) {
   const secret = getSessionSecret();
   const ttl = getSessionTtlSeconds();
   const payload = {
-    user: username,
+    user,
     iat: Math.floor(Date.now() / 1000),
     exp: Math.floor(Date.now() / 1000) + ttl
   };
@@ -125,16 +121,14 @@ export function requireAdminSession(req, res) {
   return session;
 }
 
-export function verifyAdminCredentials(username, password) {
-  const configuredUser = getAdminUsername();
+export function verifyAdminCredentials(password) {
   const configuredPass = getAdminPassword();
-  return safeCompare(username, configuredUser) && safeCompare(password, configuredPass);
+  return safeCompare(password, configuredPass);
 }
 
 export function readLoginPayload(req) {
   const body = parseJsonBody(req);
   return {
-    username: String(body.username || '').trim(),
     password: String(body.password || '')
   };
 }

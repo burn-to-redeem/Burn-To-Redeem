@@ -2,6 +2,7 @@ import { ethers } from 'ethers';
 import {
   buildClaimMessage,
   getErc1155TransferAbi,
+  getTokenGateUnits,
   hasTokenGateAccess,
   isFreshIssuedAt,
   normalizeAddress,
@@ -23,6 +24,12 @@ function requireEnv(name) {
 function parsePositiveInt(value, fallback) {
   const parsed = Number.parseInt(String(value || ''), 10);
   if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  return fallback;
+}
+
+function parseNonNegativeInt(value, fallback) {
+  const parsed = Number.parseInt(String(value || ''), 10);
+  if (Number.isInteger(parsed) && parsed >= 0) return parsed;
   return fallback;
 }
 
@@ -72,6 +79,45 @@ function applyFeeBump(overrides, bumpBps) {
   }
 
   return bumped;
+}
+
+async function countWalletClaimsFromLogs({
+  provider,
+  rewardContractAddress,
+  treasuryAddress,
+  walletAddress,
+  startBlock,
+  step
+}) {
+  const latestBlock = await provider.getBlockNumber();
+  if (startBlock <= 0 || startBlock > latestBlock) {
+    return 0;
+  }
+
+  const transferSingleTopic = ethers.id('TransferSingle(address,address,address,uint256,uint256)');
+  const transferBatchTopic = ethers.id('TransferBatch(address,address,address,uint256[],uint256[])');
+  const fromTopic = ethers.zeroPadValue(treasuryAddress, 32);
+  const toTopic = ethers.zeroPadValue(walletAddress, 32);
+
+  let count = 0;
+  for (let from = startBlock; from <= latestBlock; from += step) {
+    const to = Math.min(from + step - 1, latestBlock);
+    const batchLogs = await provider.getLogs({
+      address: rewardContractAddress,
+      fromBlock: from,
+      toBlock: to,
+      topics: [transferBatchTopic, null, fromTopic, toTopic]
+    });
+    const singleLogs = await provider.getLogs({
+      address: rewardContractAddress,
+      fromBlock: from,
+      toBlock: to,
+      topics: [transferSingleTopic, null, fromTopic, toTopic]
+    });
+    count += batchLogs.length + singleLogs.length;
+  }
+
+  return count;
 }
 
 async function sendWithRetryEscalation({
@@ -185,9 +231,16 @@ export default async function handler(req, res) {
     const rewardContractAddress = normalizeAddress(runtime.rewardErc1155Contract || requireEnv('REWARD_ERC1155_CONTRACT'));
     const rewardTokenIds = parseRewardTokenIds(runtime.rewardErc1155TokenIds || requireEnv('REWARD_ERC1155_TOKEN_IDS'));
     const rewardNftsPerClaim = Number.parseInt(String(runtime.rewardNftsPerClaim || '20'), 10);
+    const claimsPerGateToken = parsePositiveInt(runtime.claimsPerGateToken, 1);
+    const rewardClaimStartBlock = parseNonNegativeInt(runtime.rewardClaimStartBlock, 0);
+    const rewardLogScanStep = parsePositiveInt(runtime.rewardLogScanStep, 9000);
 
     if (!Number.isInteger(rewardNftsPerClaim) || rewardNftsPerClaim <= 0) {
       return res.status(400).json({ ok: false, error: 'REWARD_NFTS_PER_CLAIM must be a positive integer.' });
+    }
+
+    if (rewardClaimStartBlock <= 0) {
+      return res.status(500).json({ ok: false, error: 'REWARD_CLAIM_START_BLOCK must be configured for claim limit enforcement.' });
     }
 
     if (rewardTokenIds.length === 0) {
@@ -200,6 +253,28 @@ export default async function handler(req, res) {
 
     if (treasuryAddress.toLowerCase() !== treasurySigner.address.toLowerCase()) {
       return res.status(500).json({ ok: false, error: 'TREASURY_WALLET_ADDRESS does not match TREASURY_PRIVATE_KEY.' });
+    }
+
+    const gateTokenUnits = await getTokenGateUnits(provider, address, runtime);
+    const maxClaimsAllowed = gateTokenUnits * BigInt(claimsPerGateToken);
+    const walletClaimCount = await countWalletClaimsFromLogs({
+      provider,
+      rewardContractAddress,
+      treasuryAddress,
+      walletAddress: address,
+      startBlock: rewardClaimStartBlock,
+      step: rewardLogScanStep
+    });
+
+    if (BigInt(walletClaimCount) >= maxClaimsAllowed) {
+      return res.status(403).json({
+        ok: false,
+        error: 'Claim limit reached for this wallet. Acquire more gated tokens to claim again.',
+        gateTokenUnits: gateTokenUnits.toString(),
+        claimsPerGateToken: String(claimsPerGateToken),
+        maxClaimsAllowed: maxClaimsAllowed.toString(),
+        walletClaimCount: String(walletClaimCount)
+      });
     }
 
     const allocations = await pickRandomRewardAllocations({
@@ -265,6 +340,10 @@ export default async function handler(req, res) {
       })),
       txAttemptsUsed: attemptsUsed,
       replacementTxHashes: sentHashes,
+      gateTokenUnits: gateTokenUnits.toString(),
+      claimsPerGateToken: String(claimsPerGateToken),
+      maxClaimsAllowed: maxClaimsAllowed.toString(),
+      walletClaimCountBefore: String(walletClaimCount),
       from: treasuryAddress,
       to: address
     });

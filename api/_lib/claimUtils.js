@@ -127,7 +127,7 @@ export function verifyGatePass(gatePass, expectedAddress, config) {
   return true;
 }
 
-export async function hasTokenGateAccess(provider, walletAddress, config) {
+export async function getTokenGateUnits(provider, walletAddress, config) {
   const tokenGateContract = String(config?.tokenGateContract || '').trim();
   const tokenGateStandard = String(config?.tokenGateStandard || 'erc721').trim().toLowerCase();
   const tokenGateTokenId = Number.parseInt(String(config?.tokenGateTokenId || '0'), 10);
@@ -147,16 +147,22 @@ export async function hasTokenGateAccess(provider, walletAddress, config) {
           .map((value) => BigInt(value))
       : [BigInt(tokenGateTokenId)];
 
+    let total = 0n;
     for (const tokenId of configuredIds) {
       const balance = await safeBalanceOf(gateContract, walletAddress, tokenId);
       if (balance === null) continue;
-      if (balance > 0n) return true;
+      total += balance;
     }
-    return false;
+    return total;
   }
 
   const balance = await gateContract.balanceOf(walletAddress);
-  return balance > 0n;
+  return balance;
+}
+
+export async function hasTokenGateAccess(provider, walletAddress, config) {
+  const units = await getTokenGateUnits(provider, walletAddress, config);
+  return units > 0n;
 }
 
 export function parseRewardTokenIds(rawIds) {

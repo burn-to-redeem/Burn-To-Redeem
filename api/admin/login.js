@@ -15,12 +15,12 @@ export default async function handler(req, res) {
   try {
     assertAdminConfigured();
 
-    const { username, password } = readLoginPayload(req);
-    if (!verifyAdminCredentials(username, password)) {
+    const { password } = readLoginPayload(req);
+    if (!verifyAdminCredentials(password)) {
       return res.status(401).json({ ok: false, error: 'Invalid admin credentials.' });
     }
 
-    createAdminSession(res, username);
+    createAdminSession(res, 'admin');
     const { config, updatedAt } = await getEditableConfig();
 
     return res.status(200).json({

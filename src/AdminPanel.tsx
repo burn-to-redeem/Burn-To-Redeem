@@ -9,7 +9,6 @@ type ConfigResponse = {
 };
 
 export default function AdminPanel() {
-  const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
@@ -62,7 +61,7 @@ export default function AdminPanel() {
         method: 'POST',
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ username, password })
+        body: JSON.stringify({ password })
       });
 
       const body = (await response.json().catch(() => ({}))) as ConfigResponse;
@@ -161,20 +160,9 @@ export default function AdminPanel() {
       <div className="min-h-screen bg-neutral-950 text-neutral-100">
         <div className="mx-auto max-w-md px-5 py-12">
           <h1 className="text-3xl font-bold tracking-tight">Admin Login</h1>
-          <p className="mt-2 text-sm text-neutral-400">Authenticate to manage runtime reward/gate settings.</p>
+          <p className="mt-2 text-sm text-neutral-400">Enter admin password to manage runtime reward and gate settings.</p>
 
           <form onSubmit={handleLogin} className="mt-6 space-y-4 rounded-xl border border-neutral-800 bg-neutral-900/60 p-5">
-            <label className="block text-sm">
-              <span className="mb-1 block text-neutral-300">Username</span>
-              <input
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-                className="w-full rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2"
-                autoComplete="username"
-                required
-              />
-            </label>
-
             <label className="block text-sm">
               <span className="mb-1 block text-neutral-300">Password</span>
               <input
