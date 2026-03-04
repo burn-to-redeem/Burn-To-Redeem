@@ -55,6 +55,10 @@ Admin auth endpoints:
 
 Note: runtime overrides are stored in serverless runtime storage and may reset when instances restart. Use Vercel env vars for durable defaults.
 
+Admin UI:
+
+- `/admin` (or `/?admin=1` fallback)
+
 ## Local development
 
 ```bash
