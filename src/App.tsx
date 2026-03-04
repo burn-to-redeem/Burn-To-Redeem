@@ -64,6 +64,7 @@ type BurnWebsiteProps = {
   claimResponse: ClaimResponse | null;
   claimedNfts: NFT[];
   websiteCopy: WebsiteCopy;
+  entryMode: 'claim' | 'gate-only';
 };
 
 declare global {
@@ -228,7 +229,7 @@ function mapBurnInventoryToNfts(items: BurnInventoryNft[]): NFT[] {
     .filter((item): item is NFT => item !== null);
 }
 
-function BurnWebsite({ walletAddress, claimResponse, claimedNfts, websiteCopy }: BurnWebsiteProps) {
+function BurnWebsite({ walletAddress, claimResponse, claimedNfts, websiteCopy, entryMode }: BurnWebsiteProps) {
   const [userNfts, setUserNfts] = useState<NFT[]>(claimedNfts.length > 0 ? claimedNfts : FALLBACK_NFTS);
   const [balance, setBalance] = useState(0);
   const [selectedNft, setSelectedNft] = useState<NFT | null>(null);
@@ -379,20 +380,31 @@ function BurnWebsite({ walletAddress, claimResponse, claimedNfts, websiteCopy }:
       <main className="pt-32 pb-20 px-6 max-w-7xl mx-auto relative z-10">
         <section className="mb-12">
           <div className="glass-panel rounded-2xl p-5 text-sm">
-            <div className="font-mono uppercase text-xs tracking-[0.16em] text-white/60">Claim Confirmed</div>
-            <div className="mt-2 text-white/85">
-              {claimResponse?.rewardNftsPerClaim || claimedNfts.length} reward NFTs unlocked and loaded into your burn inventory.
-            </div>
-            {claimResponse?.txHash ? (
-              <a
-                href={`https://basescan.org/tx/${claimResponse.txHash}`}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-3 inline-block text-cyan-300 underline"
-              >
-                View claim tx on BaseScan
-              </a>
-            ) : null}
+            {entryMode === 'claim' ? (
+              <>
+                <div className="font-mono uppercase text-xs tracking-[0.16em] text-white/60">Claim Confirmed</div>
+                <div className="mt-2 text-white/85">
+                  {claimResponse?.rewardNftsPerClaim || claimedNfts.length} reward NFTs unlocked and loaded into your burn inventory.
+                </div>
+                {claimResponse?.txHash ? (
+                  <a
+                    href={`https://basescan.org/tx/${claimResponse.txHash}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-3 inline-block text-cyan-300 underline"
+                  >
+                    View claim tx on BaseScan
+                  </a>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <div className="font-mono uppercase text-xs tracking-[0.16em] text-white/60">Gate Access Confirmed</div>
+                <div className="mt-2 text-white/85">
+                  Website access granted via token-gate NFT. No new rewards were claimed in this session.
+                </div>
+              </>
+            )}
           </div>
         </section>
 
@@ -655,6 +667,7 @@ export default function App() {
   const [gatePass, setGatePass] = useState('');
   const [claimResponse, setClaimResponse] = useState<ClaimResponse | null>(null);
   const [websiteCopy, setWebsiteCopy] = useState<WebsiteCopy>(DEFAULT_WEBSITE_COPY);
+  const [entryMode, setEntryMode] = useState<'claim' | 'gate-only'>('claim');
   const [isConnecting, setIsConnecting] = useState(false);
   const [isGateSigning, setIsGateSigning] = useState(false);
   const [isClaimSigning, setIsClaimSigning] = useState(false);
@@ -813,10 +826,18 @@ export default function App() {
 
       const body = (await response.json()) as ClaimResponse;
       if (!response.ok || !body?.ok) {
-        throw new Error(body?.error || 'Claim failed.');
+        const claimError = String(body?.error || '').trim();
+        if (response.status === 403 && /claim limit reached/i.test(claimError)) {
+          setClaimResponse(null);
+          setEntryMode('gate-only');
+          setEnteredWebsite(true);
+          return;
+        }
+        throw new Error(claimError || 'Claim failed.');
       }
 
       setClaimResponse(body);
+      setEntryMode('claim');
       setEnteredWebsite(true);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Claim signature failed';
@@ -824,6 +845,21 @@ export default function App() {
     } finally {
       setIsClaimSigning(false);
     }
+  }
+
+  function handleEnterWebsiteWithoutClaim() {
+    setError('');
+    if (!gatePass) {
+      setError('Complete token-gate signature first.');
+      return;
+    }
+    if (isWrongNetwork) {
+      setError(`Wrong network. Switch to Base (chain ${TARGET_CHAIN_ID}) first.`);
+      return;
+    }
+    setClaimResponse(null);
+    setEntryMode('gate-only');
+    setEnteredWebsite(true);
   }
 
   const isConnected = Boolean(walletAddress);
@@ -836,6 +872,7 @@ export default function App() {
         claimResponse={claimResponse}
         claimedNfts={claimedNfts}
         websiteCopy={websiteCopy}
+        entryMode={entryMode}
       />
     );
   }
@@ -904,13 +941,22 @@ export default function App() {
             </div>
             <p className="text-sm text-neutral-400">{websiteCopy.step2Subtitle}</p>
 
-            <button
-              onClick={handleClaimSignature}
-              disabled={isClaimSigning || isWrongNetwork || Boolean(claimResponse?.ok)}
-              className="rounded-lg bg-cyan-300 px-4 py-2 font-semibold text-black disabled:opacity-50"
-            >
-              {claimResponse?.ok ? 'Rewards Claimed' : isClaimSigning ? 'Claiming...' : 'Sign & Claim Rewards'}
-            </button>
+            <div className="flex flex-wrap gap-3">
+              <button
+                onClick={handleClaimSignature}
+                disabled={isClaimSigning || isWrongNetwork || Boolean(claimResponse?.ok)}
+                className="rounded-lg bg-cyan-300 px-4 py-2 font-semibold text-black disabled:opacity-50"
+              >
+                {claimResponse?.ok ? 'Rewards Claimed' : isClaimSigning ? 'Claiming...' : 'Sign & Claim Rewards'}
+              </button>
+              <button
+                onClick={handleEnterWebsiteWithoutClaim}
+                disabled={isClaimSigning || isWrongNetwork}
+                className="rounded-lg border border-neutral-600 px-4 py-2 font-semibold text-neutral-100 hover:bg-neutral-800 disabled:opacity-50"
+              >
+                Enter Website (Token-Gated)
+              </button>
+            </div>
           </div>
         ) : null}
 
