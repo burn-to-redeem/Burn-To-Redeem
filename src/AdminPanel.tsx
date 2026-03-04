@@ -10,6 +10,7 @@ type ConfigResponse = {
 
 export default function AdminPanel() {
   const [password, setPassword] = useState('');
+  const [activeTab, setActiveTab] = useState<'runtime' | 'website'>('runtime');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState('');
@@ -22,6 +23,16 @@ export default function AdminPanel() {
     if (editableKeys.length > 0) return editableKeys;
     return Object.keys(config).sort((a, b) => a.localeCompare(b));
   }, [config, editableKeys]);
+
+  const runtimeKeys = useMemo(
+    () => orderedKeys.filter((key) => !key.startsWith('WEBSITE_')),
+    [orderedKeys]
+  );
+  const websiteKeys = useMemo(
+    () => orderedKeys.filter((key) => key.startsWith('WEBSITE_')),
+    [orderedKeys]
+  );
+  const visibleKeys = activeTab === 'website' ? websiteKeys : runtimeKeys;
 
   async function fetchConfig() {
     const response = await fetch('/api/admin/config', {
@@ -217,6 +228,34 @@ export default function AdminPanel() {
         </div>
 
         <div className="mt-6 rounded-xl border border-neutral-800 bg-neutral-900/60 p-5">
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setActiveTab('runtime')}
+              className={`rounded-lg border px-3 py-2 text-xs font-semibold uppercase tracking-wide ${
+                activeTab === 'runtime'
+                  ? 'border-cyan-300 bg-cyan-300 text-black'
+                  : 'border-neutral-700 text-neutral-200 hover:bg-neutral-800'
+              }`}
+            >
+              Runtime Tab
+            </button>
+            <button
+              onClick={() => setActiveTab('website')}
+              className={`rounded-lg border px-3 py-2 text-xs font-semibold uppercase tracking-wide ${
+                activeTab === 'website'
+                  ? 'border-cyan-300 bg-cyan-300 text-black'
+                  : 'border-neutral-700 text-neutral-200 hover:bg-neutral-800'
+              }`}
+            >
+              Website Tab
+            </button>
+            <span className="text-xs text-neutral-400">
+              {activeTab === 'website'
+                ? 'Edit website copy/settings used by the frontend.'
+                : 'Edit chain, gate, claim, and reward runtime settings.'}
+            </span>
+          </div>
+
           <div className="mb-4 flex flex-wrap items-center gap-3">
             <button
               onClick={handleSave}
@@ -240,9 +279,9 @@ export default function AdminPanel() {
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">
-            {orderedKeys.map((key) => {
+            {visibleKeys.map((key) => {
               const value = config[key] ?? '';
-              const isLongField = key.includes('_IDS');
+              const isLongField = key.includes('_IDS') || key.endsWith('_SUBTITLE');
 
               return (
                 <label key={key} className="block text-sm">
@@ -274,6 +313,11 @@ export default function AdminPanel() {
               );
             })}
           </div>
+          {visibleKeys.length === 0 ? (
+            <div className="mt-4 rounded-lg border border-neutral-700 bg-neutral-900 px-4 py-3 text-sm text-neutral-400">
+              No editable fields in this tab.
+            </div>
+          ) : null}
         </div>
 
         {error ? (

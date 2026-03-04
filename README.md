@@ -38,6 +38,7 @@ Required:
 - `ADMIN_SESSION_SECRET`
 - `ADMIN_SESSION_TTL_SECONDS`
 - `RUNTIME_CONFIG_INTERNAL_SECRET`
+- `WEBSITE_*` copy keys (see `.env.example`) if you want deploy-time defaults for website text
 
 ## Security notes
 
@@ -64,6 +65,11 @@ Note: runtime overrides are stored in serverless runtime storage and may reset w
 Admin UI:
 
 - `/admin` (or `/?admin=1` fallback)
+- Includes `Runtime Tab` and `Website Tab` so you can edit website copy/content from backend.
+
+Public website-config endpoint:
+
+- `GET /api/website-config` (frontend reads this to apply website text edited in admin)
 
 ## Local development
 

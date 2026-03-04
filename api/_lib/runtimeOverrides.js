@@ -28,7 +28,19 @@ export const EDITABLE_OVERRIDE_KEYS = [
   'REWARD_TX_RETRY_ATTEMPTS',
   'REWARD_TX_RETRY_WAIT_MS',
   'REWARD_RETRY_FEE_BUMP_BPS',
-  'REWARD_ESTIMATE_FROM'
+  'REWARD_ESTIMATE_FROM',
+  'WEBSITE_BRAND_NAME',
+  'WEBSITE_ACCESS_TITLE',
+  'WEBSITE_ACCESS_SUBTITLE',
+  'WEBSITE_STEP1_TITLE',
+  'WEBSITE_STEP1_SUBTITLE',
+  'WEBSITE_STEP2_TITLE',
+  'WEBSITE_STEP2_SUBTITLE',
+  'WEBSITE_BURN_HERO_SUBTITLE',
+  'WEBSITE_NFTS_TAB_LABEL',
+  'WEBSITE_REWARDS_TAB_LABEL',
+  'WEBSITE_NFTS_SECTION_TITLE',
+  'WEBSITE_REWARDS_SECTION_TITLE'
 ];
 
 const DEFAULT_EDITABLE_CONFIG = {
@@ -57,7 +69,24 @@ const DEFAULT_EDITABLE_CONFIG = {
   REWARD_TX_RETRY_ATTEMPTS: process.env.REWARD_TX_RETRY_ATTEMPTS || '3',
   REWARD_TX_RETRY_WAIT_MS: process.env.REWARD_TX_RETRY_WAIT_MS || '30000',
   REWARD_RETRY_FEE_BUMP_BPS: process.env.REWARD_RETRY_FEE_BUMP_BPS || '12500',
-  REWARD_ESTIMATE_FROM: process.env.REWARD_ESTIMATE_FROM || ''
+  REWARD_ESTIMATE_FROM: process.env.REWARD_ESTIMATE_FROM || '',
+  WEBSITE_BRAND_NAME: process.env.WEBSITE_BRAND_NAME || 'Burn to Redeem',
+  WEBSITE_ACCESS_TITLE: process.env.WEBSITE_ACCESS_TITLE || 'Burn to Redeem Access',
+  WEBSITE_ACCESS_SUBTITLE:
+    process.env.WEBSITE_ACCESS_SUBTITLE ||
+    'Sign once for token-gate access, then sign again to claim random rewards before entering the burn website.',
+  WEBSITE_STEP1_TITLE: process.env.WEBSITE_STEP1_TITLE || 'Step 1: Token-Gated Signature',
+  WEBSITE_STEP1_SUBTITLE:
+    process.env.WEBSITE_STEP1_SUBTITLE || 'Connect on Base and sign to prove ownership of the gate NFT.',
+  WEBSITE_STEP2_TITLE: process.env.WEBSITE_STEP2_TITLE || 'Step 2: Claim 20 Random Reward NFTs',
+  WEBSITE_STEP2_SUBTITLE:
+    process.env.WEBSITE_STEP2_SUBTITLE || 'Sign again to receive a random 20-NFT allocation from treasury wallet.',
+  WEBSITE_BURN_HERO_SUBTITLE:
+    process.env.WEBSITE_BURN_HERO_SUBTITLE || 'Burn your claimed rewards to stack credits and redeem premium drops.',
+  WEBSITE_NFTS_TAB_LABEL: process.env.WEBSITE_NFTS_TAB_LABEL || 'NFTS TO BURN',
+  WEBSITE_REWARDS_TAB_LABEL: process.env.WEBSITE_REWARDS_TAB_LABEL || 'REDEEMABLE REWARDS',
+  WEBSITE_NFTS_SECTION_TITLE: process.env.WEBSITE_NFTS_SECTION_TITLE || 'NFTS TO BURN',
+  WEBSITE_REWARDS_SECTION_TITLE: process.env.WEBSITE_REWARDS_SECTION_TITLE || 'Redeemable Rewards'
 };
 
 function parsePositiveInt(value, fallback) {
@@ -107,6 +136,18 @@ function buildRuntimeFromConfig(config, overrides, updatedAt) {
     rewardTxRetryWaitMs: parsePositiveInt(config.REWARD_TX_RETRY_WAIT_MS, 30000),
     rewardRetryFeeBumpBps: parsePositiveInt(config.REWARD_RETRY_FEE_BUMP_BPS, 12500),
     rewardEstimateFrom: config.REWARD_ESTIMATE_FROM,
+    websiteBrandName: config.WEBSITE_BRAND_NAME,
+    websiteAccessTitle: config.WEBSITE_ACCESS_TITLE,
+    websiteAccessSubtitle: config.WEBSITE_ACCESS_SUBTITLE,
+    websiteStep1Title: config.WEBSITE_STEP1_TITLE,
+    websiteStep1Subtitle: config.WEBSITE_STEP1_SUBTITLE,
+    websiteStep2Title: config.WEBSITE_STEP2_TITLE,
+    websiteStep2Subtitle: config.WEBSITE_STEP2_SUBTITLE,
+    websiteBurnHeroSubtitle: config.WEBSITE_BURN_HERO_SUBTITLE,
+    websiteNftsTabLabel: config.WEBSITE_NFTS_TAB_LABEL,
+    websiteRewardsTabLabel: config.WEBSITE_REWARDS_TAB_LABEL,
+    websiteNftsSectionTitle: config.WEBSITE_NFTS_SECTION_TITLE,
+    websiteRewardsSectionTitle: config.WEBSITE_REWARDS_SECTION_TITLE,
     claimSigningSecret: (process.env.CLAIM_SIGNING_SECRET || '').trim(),
     treasuryPrivateKey: (process.env.TREASURY_PRIVATE_KEY || '').trim(),
     overrides,

@@ -38,10 +38,32 @@ type BurnInventoryResponse = {
   error?: string;
 };
 
+type WebsiteCopy = {
+  brandName: string;
+  accessTitle: string;
+  accessSubtitle: string;
+  step1Title: string;
+  step1Subtitle: string;
+  step2Title: string;
+  step2Subtitle: string;
+  burnHeroSubtitle: string;
+  nftsTabLabel: string;
+  rewardsTabLabel: string;
+  nftsSectionTitle: string;
+  rewardsSectionTitle: string;
+};
+
+type WebsiteConfigResponse = {
+  ok: boolean;
+  website?: Partial<WebsiteCopy>;
+  error?: string;
+};
+
 type BurnWebsiteProps = {
   walletAddress: string;
   claimResponse: ClaimResponse | null;
   claimedNfts: NFT[];
+  websiteCopy: WebsiteCopy;
 };
 
 declare global {
@@ -111,6 +133,22 @@ const MOCK_REWARDS: Reward[] = [
     stock: 5
   }
 ];
+
+const DEFAULT_WEBSITE_COPY: WebsiteCopy = {
+  brandName: 'Burn to Redeem',
+  accessTitle: 'Burn to Redeem Access',
+  accessSubtitle:
+    'Sign once for token-gate access, then sign again to claim random rewards before entering the burn website.',
+  step1Title: 'Step 1: Token-Gated Signature',
+  step1Subtitle: 'Connect on Base and sign to prove ownership of the gate NFT.',
+  step2Title: 'Step 2: Claim 20 Random Reward NFTs',
+  step2Subtitle: 'Sign again to receive a random 20-NFT allocation from treasury wallet.',
+  burnHeroSubtitle: 'Burn your claimed rewards to stack credits and redeem premium drops.',
+  nftsTabLabel: 'NFTS TO BURN',
+  rewardsTabLabel: 'REDEEMABLE REWARDS',
+  nftsSectionTitle: 'NFTS TO BURN',
+  rewardsSectionTitle: 'Redeemable Rewards'
+};
 
 function shortAddress(value: string) {
   return `${value.slice(0, 6)}...${value.slice(-4)}`;
@@ -190,7 +228,7 @@ function mapBurnInventoryToNfts(items: BurnInventoryNft[]): NFT[] {
     .filter((item): item is NFT => item !== null);
 }
 
-function BurnWebsite({ walletAddress, claimResponse, claimedNfts }: BurnWebsiteProps) {
+function BurnWebsite({ walletAddress, claimResponse, claimedNfts, websiteCopy }: BurnWebsiteProps) {
   const [userNfts, setUserNfts] = useState<NFT[]>(claimedNfts.length > 0 ? claimedNfts : FALLBACK_NFTS);
   const [balance, setBalance] = useState(0);
   const [selectedNft, setSelectedNft] = useState<NFT | null>(null);
@@ -323,7 +361,7 @@ function BurnWebsite({ walletAddress, claimResponse, claimedNfts }: BurnWebsiteP
             <div className="w-10 h-10 bg-white flex items-center justify-center rounded-sm">
               <Flame className="text-black w-6 h-6" />
             </div>
-            <span className="font-display font-bold text-xl tracking-tighter uppercase">Burn to Redeem</span>
+            <span className="font-display font-bold text-xl tracking-tighter uppercase">{websiteCopy.brandName}</span>
           </div>
 
           <div className="flex items-center gap-4 bg-white/10 px-4 py-2 rounded-full border border-white/10">
@@ -371,7 +409,7 @@ function BurnWebsite({ walletAddress, claimResponse, claimedNfts }: BurnWebsiteP
                 Redeem
               </motion.h1>
               <p className="text-white/60 max-w-md text-lg leading-relaxed">
-                Burn your claimed rewards to stack credits and redeem premium drops.
+                {websiteCopy.burnHeroSubtitle}
               </p>
             </div>
 
@@ -407,7 +445,7 @@ function BurnWebsite({ walletAddress, claimResponse, claimedNfts }: BurnWebsiteP
                     : 'bg-black/40 text-white/70 border-white/20 hover:text-white'
                 }`}
               >
-                NFTS TO BURN
+                {websiteCopy.nftsTabLabel}
               </button>
               <button
                 onClick={() => setActiveTab('rewards')}
@@ -417,7 +455,7 @@ function BurnWebsite({ walletAddress, claimResponse, claimedNfts }: BurnWebsiteP
                     : 'bg-black/40 text-white/70 border-white/20 hover:text-white'
                 }`}
               >
-                REDEEMABLE REWARDS
+                {websiteCopy.rewardsTabLabel}
               </button>
             </div>
           </div>
@@ -426,7 +464,7 @@ function BurnWebsite({ walletAddress, claimResponse, claimedNfts }: BurnWebsiteP
         {activeTab === 'nfts' ? (
           <section id="gallery" className="mb-32">
             <div className="flex items-center justify-between mb-12">
-              <h2 className="font-display text-4xl font-bold uppercase tracking-tighter">NFTS TO BURN</h2>
+              <h2 className="font-display text-4xl font-bold uppercase tracking-tighter">{websiteCopy.nftsSectionTitle}</h2>
               <div className="flex items-center gap-2 text-xs font-mono text-white/40">
                 <Info className="w-4 h-4" />
                 SELECT AN NFT TO BURN FOR CREDITS
@@ -564,7 +602,7 @@ function BurnWebsite({ walletAddress, claimResponse, claimedNfts }: BurnWebsiteP
         {activeTab === 'rewards' ? (
           <section id="redeem" className="mb-32">
             <div className="flex items-center justify-between mb-12">
-              <h2 className="font-display text-4xl font-bold uppercase tracking-tighter">Redeemable Rewards</h2>
+              <h2 className="font-display text-4xl font-bold uppercase tracking-tighter">{websiteCopy.rewardsSectionTitle}</h2>
               <div className="flex items-center gap-2 text-xs font-mono text-white/40">
                 <Zap className="w-4 h-4" />
                 USE CREDITS TO UNLOCK EXCLUSIVE ITEMS
@@ -616,6 +654,7 @@ export default function App() {
   const [chainId, setChainId] = useState<number | null>(null);
   const [gatePass, setGatePass] = useState('');
   const [claimResponse, setClaimResponse] = useState<ClaimResponse | null>(null);
+  const [websiteCopy, setWebsiteCopy] = useState<WebsiteCopy>(DEFAULT_WEBSITE_COPY);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isGateSigning, setIsGateSigning] = useState(false);
   const [isClaimSigning, setIsClaimSigning] = useState(false);
@@ -626,6 +665,32 @@ export default function App() {
     () => expandClaimAllocationsToNfts(claimResponse?.allocations),
     [claimResponse?.allocations]
   );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchWebsiteCopy() {
+      try {
+        const response = await fetch('/api/website-config');
+        const body = (await response.json().catch(() => ({}))) as WebsiteConfigResponse;
+        if (!response.ok || !body.ok || !body.website) return;
+
+        if (!cancelled) {
+          setWebsiteCopy((prev) => ({
+            ...prev,
+            ...body.website
+          }));
+        }
+      } catch {
+        // Keep defaults if endpoint is unavailable.
+      }
+    }
+
+    fetchWebsiteCopy();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function getProvider() {
     if (!window.ethereum) {
@@ -765,23 +830,30 @@ export default function App() {
   const isWrongNetwork = isConnected && chainId !== TARGET_CHAIN_ID;
 
   if (enteredWebsite) {
-    return <BurnWebsite walletAddress={walletAddress} claimResponse={claimResponse} claimedNfts={claimedNfts} />;
+    return (
+      <BurnWebsite
+        walletAddress={walletAddress}
+        claimResponse={claimResponse}
+        claimedNfts={claimedNfts}
+        websiteCopy={websiteCopy}
+      />
+    );
   }
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
       <div className="mx-auto max-w-3xl px-5 py-10">
-        <h1 className="text-3xl font-bold tracking-tight">Burn to Redeem Access</h1>
+        <h1 className="text-3xl font-bold tracking-tight">{websiteCopy.accessTitle}</h1>
         <p className="mt-2 text-sm text-neutral-400">
-          Sign once for token-gate access, then sign again to claim random rewards before entering the burn website.
+          {websiteCopy.accessSubtitle}
         </p>
 
         <div className="mt-6 space-y-4 rounded-xl border border-neutral-800 bg-neutral-900/60 p-5">
-          <div className="flex items-center gap-2">
-            <LockKeyhole className="w-5 h-5 text-cyan-300" />
-            <h2 className="text-lg font-semibold">Step 1: Token-Gated Signature</h2>
-          </div>
-          <p className="text-sm text-neutral-400">Connect on Base and sign to prove ownership of the gate NFT.</p>
+            <div className="flex items-center gap-2">
+              <LockKeyhole className="w-5 h-5 text-cyan-300" />
+              <h2 className="text-lg font-semibold">{websiteCopy.step1Title}</h2>
+            </div>
+            <p className="text-sm text-neutral-400">{websiteCopy.step1Subtitle}</p>
 
           {!isConnected ? (
             <button
@@ -828,11 +900,9 @@ export default function App() {
           <div className="mt-4 space-y-4 rounded-xl border border-neutral-800 bg-neutral-900/60 p-5">
             <div className="flex items-center gap-2">
               <Gift className="w-5 h-5 text-cyan-300" />
-              <h2 className="text-lg font-semibold">Step 2: Claim 20 Random Reward NFTs</h2>
+              <h2 className="text-lg font-semibold">{websiteCopy.step2Title}</h2>
             </div>
-            <p className="text-sm text-neutral-400">
-              Sign again to receive a random 20-NFT allocation from treasury wallet.
-            </p>
+            <p className="text-sm text-neutral-400">{websiteCopy.step2Subtitle}</p>
 
             <button
               onClick={handleClaimSignature}
