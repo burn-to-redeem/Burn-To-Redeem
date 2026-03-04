@@ -59,6 +59,86 @@ async function buildLowGasOverrides(provider) {
   return overrides;
 }
 
+function bumpByBps(value, bps) {
+  return (value * BigInt(bps)) / 10000n;
+}
+
+function applyFeeBump(overrides, bumpBps) {
+  const bumped = { ...overrides };
+
+  if (overrides.maxFeePerGas !== undefined && overrides.maxPriorityFeePerGas !== undefined) {
+    bumped.maxPriorityFeePerGas = bumpByBps(overrides.maxPriorityFeePerGas, bumpBps) + 1n;
+    bumped.maxFeePerGas = bumpByBps(overrides.maxFeePerGas, bumpBps) + 1n;
+  } else if (overrides.gasPrice !== undefined) {
+    bumped.gasPrice = bumpByBps(overrides.gasPrice, bumpBps) + 1n;
+  }
+
+  return bumped;
+}
+
+async function sendWithRetryEscalation({
+  provider,
+  signer,
+  txRequest,
+  initialGasOverrides
+}) {
+  const retryAttempts = parsePositiveInt(process.env.REWARD_TX_RETRY_ATTEMPTS, 3);
+  const waitMs = parsePositiveInt(process.env.REWARD_TX_RETRY_WAIT_MS, 30000);
+  const bumpBps = parsePositiveInt(process.env.REWARD_RETRY_FEE_BUMP_BPS, 12500);
+  const sentHashes = [];
+
+  let feeOverrides = { ...initialGasOverrides };
+  let lastTxHash = null;
+
+  for (let attempt = 0; attempt < retryAttempts; attempt += 1) {
+    if (attempt > 0) {
+      feeOverrides = applyFeeBump(feeOverrides, bumpBps);
+    }
+
+    let tx;
+    try {
+      tx = await signer.sendTransaction({ ...txRequest, ...feeOverrides });
+      sentHashes.push(tx.hash);
+      lastTxHash = tx.hash;
+    } catch (error) {
+      const message = error instanceof Error ? error.message.toLowerCase() : '';
+      const nonceConflict =
+        message.includes('nonce has already been used') ||
+        message.includes('nonce too low') ||
+        message.includes('already known');
+
+      if (!nonceConflict) {
+        throw error;
+      }
+
+      for (const hash of sentHashes) {
+        const receipt = await provider.getTransactionReceipt(hash);
+        if (receipt) {
+          return { txHash: hash, receipt, sentHashes, attemptsUsed: attempt + 1 };
+        }
+      }
+
+      continue;
+    }
+
+    const receipt = await provider.waitForTransaction(tx.hash, 1, waitMs);
+    if (receipt) {
+      return { txHash: tx.hash, receipt, sentHashes, attemptsUsed: attempt + 1 };
+    }
+  }
+
+  if (!lastTxHash) {
+    throw new Error('Failed to submit treasury transfer transaction.');
+  }
+
+  const fallbackReceipt = await provider.waitForTransaction(lastTxHash, 1, 120000);
+  if (fallbackReceipt) {
+    return { txHash: lastTxHash, receipt: fallbackReceipt, sentHashes, attemptsUsed: retryAttempts };
+  }
+
+  throw new Error(`Reward transfer still pending after ${retryAttempts} attempts.`);
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -140,19 +220,41 @@ export default async function handler(req, res) {
     );
     const txOverrides = await buildLowGasOverrides(provider);
 
-    const tx = await rewardContract.safeBatchTransferFrom(
+    const transferData = rewardContract.interface.encodeFunctionData('safeBatchTransferFrom', [
       treasuryAddress,
       address,
       transferIds,
       transferAmounts,
-      '0x',
-      txOverrides
-    );
-    const receipt = await tx.wait();
+      '0x'
+    ]);
+
+    const nonce = await provider.getTransactionCount(treasuryAddress, 'pending');
+    const estimateFrom = String(process.env.REWARD_ESTIMATE_FROM || treasuryAddress).trim();
+    const estimatedGas = await provider.estimateGas({
+      from: estimateFrom,
+      to: rewardContractAddress,
+      data: transferData
+    });
+    const gasLimitMultiplierBps = parsePositiveInt(process.env.REWARD_GAS_LIMIT_MULTIPLIER_BPS, 12000);
+    const gasLimit = bumpByBps(estimatedGas, gasLimitMultiplierBps);
+
+    const txRequest = {
+      to: rewardContractAddress,
+      data: transferData,
+      nonce,
+      gasLimit
+    };
+
+    const { txHash, receipt, sentHashes, attemptsUsed } = await sendWithRetryEscalation({
+      provider,
+      signer: treasurySigner,
+      txRequest,
+      initialGasOverrides: txOverrides
+    });
 
     return res.status(200).json({
       ok: true,
-      txHash: tx.hash,
+      txHash,
       blockNumber: receipt?.blockNumber ?? null,
       rewardContract: rewardContractAddress,
       rewardNftsPerClaim,
@@ -160,6 +262,8 @@ export default async function handler(req, res) {
         tokenId: entry.tokenId.toString(),
         amount: entry.amount.toString()
       })),
+      txAttemptsUsed: attemptsUsed,
+      replacementTxHashes: sentHashes,
       from: treasuryAddress,
       to: address
     });

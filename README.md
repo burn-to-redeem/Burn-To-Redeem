@@ -25,6 +25,10 @@ Required:
 - `REWARD_MIN_PRIORITY_GWEI`
 - `REWARD_BASE_FEE_MULTIPLIER_BPS`
 - `REWARD_GAS_PRICE_MULTIPLIER_BPS`
+- `REWARD_GAS_LIMIT_MULTIPLIER_BPS`
+- `REWARD_TX_RETRY_ATTEMPTS`
+- `REWARD_TX_RETRY_WAIT_MS`
+- `REWARD_RETRY_FEE_BUMP_BPS`
 
 ## Security notes
 
@@ -32,6 +36,7 @@ Required:
 - Use a dedicated treasury wallet with limited funds.
 - For high-value rewards, move to contract-based allowlists/nonces and persistent claim tracking.
 - `safeBatchTransferFrom` is used (one tx) and low-gas EIP-1559 overrides are applied when `REWARD_GAS_MODE=lowest`.
+- If a tx remains pending, retries reuse the same nonce with a fee bump for replacement until confirmation.
 
 ## Local development
 
