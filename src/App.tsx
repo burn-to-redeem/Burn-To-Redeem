@@ -84,7 +84,6 @@ declare global {
 }
 
 const TARGET_CHAIN_ID = Number(import.meta.env.VITE_BASE_CHAIN_ID || 8453);
-const TOKEN_GATE_CONTRACT = String(import.meta.env.VITE_TOKEN_GATE_CONTRACT || '');
 const REWARD_CONTRACT = String(import.meta.env.VITE_REWARD_ERC1155_CONTRACT || '');
 const BURN_COLLECTION_SLUG = String(import.meta.env.VITE_BURN_COLLECTION_SLUG || 'cc0-by-pierre').trim();
 
@@ -962,16 +961,6 @@ export default function App() {
           <div className="mt-4 rounded-xl border border-red-600/40 bg-red-900/20 p-4 text-sm text-red-200">{error}</div>
         ) : null}
 
-        <div className="mt-6 rounded-xl border border-neutral-800 bg-neutral-900/60 p-5 text-xs text-neutral-400">
-          <div>
-            Token gate contract:{' '}
-            <span className="font-mono break-all">{TOKEN_GATE_CONTRACT || 'Not configured'}</span>
-          </div>
-          <div className="mt-1">
-            Reward ERC-1155 contract:{' '}
-            <span className="font-mono break-all">{REWARD_CONTRACT || 'Not configured'}</span>
-          </div>
-        </div>
       </div>
     </div>
   );
