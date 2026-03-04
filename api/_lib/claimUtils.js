@@ -19,6 +19,14 @@ const ERC1155_TRANSFER_ABI = [
   'function safeTransferFrom(address from, address to, uint256 id, uint256 value, bytes data)'
 ];
 
+async function safeBalanceOf(contract, address, tokenId) {
+  try {
+    return await contract.balanceOf(address, tokenId);
+  } catch {
+    return null;
+  }
+}
+
 function toBase64Url(value) {
   return Buffer.from(value, 'utf8').toString('base64url');
 }
@@ -144,7 +152,8 @@ export async function hasTokenGateAccess(provider, walletAddress) {
       : [BigInt(TOKEN_GATE_TOKEN_ID)];
 
     for (const tokenId of configuredIds) {
-      const balance = await gateContract.balanceOf(walletAddress, tokenId);
+      const balance = await safeBalanceOf(gateContract, walletAddress, tokenId);
+      if (balance === null) continue;
       if (balance > 0n) return true;
     }
     return false;
@@ -166,14 +175,22 @@ export async function pickRandomRewardTokenId({ provider, rewardContractAddress,
   const rewardContract = new ethers.Contract(rewardContractAddress, ERC1155_TRANSFER_ABI, provider);
 
   const available = [];
+  let revertedIds = 0;
   for (const tokenId of tokenIds) {
-    const balance = await rewardContract.balanceOf(treasuryAddress, tokenId);
+    const balance = await safeBalanceOf(rewardContract, treasuryAddress, tokenId);
+    if (balance === null) {
+      revertedIds += 1;
+      continue;
+    }
     if (balance > 0n) {
       available.push({ tokenId, balance });
     }
   }
 
   if (available.length === 0) {
+    if (revertedIds === tokenIds.length) {
+      throw new Error('All configured reward token IDs reverted on balanceOf. Verify ERC-1155 contract and token IDs.');
+    }
     throw new Error('Treasury wallet has zero balance for configured reward token IDs.');
   }
 
