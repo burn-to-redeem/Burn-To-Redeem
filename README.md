@@ -24,6 +24,8 @@ Required:
 - `CLAIMS_PER_GATE_TOKEN` (set to `1` to allow one reward claim per gated token unit)
 - `REWARD_CLAIM_START_BLOCK` (required for claim limit enforcement; set this to the deployment block for reward claims)
 - `REWARD_LOG_SCAN_STEP` (default `9000`; lower if RPC log queries time out)
+- `OPENSEA_API_KEY` (used for `NFTS TO BURN` gallery and automatic reward token ID discovery)
+- `OPENSEA_MCP_TOKEN` (optional alternative/extra auth header for OpenSea calls)
 - `REWARD_GAS_MODE` (`lowest` recommended)
 - `REWARD_MIN_PRIORITY_GWEI`
 - `REWARD_BASE_FEE_MULTIPLIER_BPS`
@@ -45,6 +47,7 @@ Required:
 - `safeBatchTransferFrom` is used (one tx) and low-gas EIP-1559 overrides are applied when `REWARD_GAS_MODE=lowest`.
 - If a tx remains pending, retries reuse the same nonce with a fee bump for replacement until confirmation.
 - Current backend claim enforcement counts prior treasury transfer logs from `REWARD_CLAIM_START_BLOCK` to ensure a wallet cannot over-claim versus gated token units held.
+- If `REWARD_ERC1155_TOKEN_IDS` is empty, the backend auto-discovers treasury-held token IDs from OpenSea before selecting random rewards.
 
 ## Admin backend login
 
@@ -72,3 +75,8 @@ npm run dev
 ## Deploy
 
 Deploy to Vercel and set env vars in the project dashboard.
+
+## Burn inventory gallery
+
+- UI includes a `NFTS TO BURN` tab that loads wallet inventory from `GET /api/nfts-to-burn` (OpenSea-backed, server-side key only).
+- The gallery is filtered to the configured reward ERC-1155 contract and shown in a card grid ready for burn selection.

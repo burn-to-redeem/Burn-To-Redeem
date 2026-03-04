@@ -1,0 +1,62 @@
+import { ethers } from 'ethers';
+import { fetchOpenSeaWalletContractNfts } from './_lib/opensea.js';
+import { getRuntimeConfigForRequest } from './_lib/runtimeOverrides.js';
+
+function normalizeAddress(value, fieldName) {
+  try {
+    return ethers.getAddress(String(value || '').trim());
+  } catch {
+    throw new Error(`Invalid ${fieldName}.`);
+  }
+}
+
+export default async function handler(req, res) {
+  if (req.method !== 'GET') {
+    res.setHeader('Allow', 'GET');
+    return res.status(405).json({ ok: false, error: 'Method not allowed' });
+  }
+
+  try {
+    const runtime = await getRuntimeConfigForRequest(req);
+    const protocol = req.headers?.['x-forwarded-proto'] || 'https';
+    const host = req.headers?.host || 'localhost';
+    const url = new URL(req.url || '/api/nfts-to-burn', `${protocol}://${host}`);
+
+    const address = normalizeAddress(url.searchParams.get('address'), 'wallet address');
+    const configuredRewardContract =
+      String(runtime.rewardErc1155Contract || process.env.REWARD_ERC1155_CONTRACT || '').trim();
+    const contractParam = String(url.searchParams.get('contract') || configuredRewardContract).trim();
+    const contractAddress = normalizeAddress(contractParam, 'reward contract');
+    const max = Number.parseInt(String(url.searchParams.get('max') || '80'), 10);
+
+    const apiKey = (process.env.OPENSEA_API_KEY || '').trim();
+    const mcpToken = (process.env.OPENSEA_MCP_TOKEN || '').trim();
+    if (!apiKey && !mcpToken) {
+      return res.status(500).json({ ok: false, error: 'Missing OPENSEA_API_KEY or OPENSEA_MCP_TOKEN.' });
+    }
+
+    const result = await fetchOpenSeaWalletContractNfts({
+      walletAddress: address,
+      contractAddress,
+      chainId: runtime.chainId,
+      apiKey,
+      mcpToken,
+      perPage: 80,
+      maxItems: Number.isInteger(max) && max > 0 ? Math.min(max, 1000) : 80,
+      timeoutMs: 12000
+    });
+
+    return res.status(200).json({
+      ok: true,
+      chain: result.chain,
+      walletAddress: result.walletAddress,
+      contractAddress: result.contractAddress,
+      strategy: result.strategy,
+      total: result.nfts.length,
+      nfts: result.nfts
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unexpected server error.';
+    return res.status(500).json({ ok: false, error: message });
+  }
+}

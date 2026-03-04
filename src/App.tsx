@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowRight, Check, Flame, Gift, Info, LockKeyhole, Shield, Wallet, X, Zap } from 'lucide-react';
 import { ethers } from 'ethers';
@@ -14,7 +14,27 @@ type ClaimResponse = {
   txHash?: string;
   rewardContract?: string;
   rewardNftsPerClaim?: number;
+  rewardTokenIdsSource?: string;
+  rewardTokenIdsUsed?: string[];
   allocations?: ClaimAllocation[];
+  error?: string;
+};
+
+type BurnInventoryNft = {
+  tokenId: string;
+  name: string;
+  imageUrl: string;
+  displayImageUrl: string;
+  collection: string;
+  collectionName: string;
+  contractAddress: string;
+  openseaUrl: string;
+};
+
+type BurnInventoryResponse = {
+  ok: boolean;
+  total?: number;
+  nfts?: BurnInventoryNft[];
   error?: string;
 };
 
@@ -152,6 +172,24 @@ function expandClaimAllocationsToNfts(allocations?: ClaimAllocation[]): NFT[] {
   return items;
 }
 
+function mapBurnInventoryToNfts(items: BurnInventoryNft[]): NFT[] {
+  return items
+    .map((item, index) => {
+      const tokenIdNum = Number.parseInt(String(item.tokenId || ''), 10);
+      if (!Number.isInteger(tokenIdNum) || tokenIdNum < 0) return null;
+
+      return {
+        id: `${item.contractAddress.toLowerCase()}-${item.tokenId}-${index}`,
+        name: item.name || `TREASURE #${item.tokenId}`,
+        collection: item.collectionName || item.collection || 'TREASURY_DROP',
+        image: item.displayImageUrl || item.imageUrl || `https://picsum.photos/seed/reward-${item.tokenId}-${index}/400/400`,
+        rarity: rarityFromToken(tokenIdNum),
+        burnValue: burnValueFromToken(tokenIdNum)
+      } as NFT;
+    })
+    .filter((item): item is NFT => item !== null);
+}
+
 function BurnWebsite({ walletAddress, claimResponse, claimedNfts }: BurnWebsiteProps) {
   const [userNfts, setUserNfts] = useState<NFT[]>(claimedNfts.length > 0 ? claimedNfts : FALLBACK_NFTS);
   const [balance, setBalance] = useState(0);
@@ -159,6 +197,73 @@ function BurnWebsite({ walletAddress, claimResponse, claimedNfts }: BurnWebsiteP
   const [isBurning, setIsBurning] = useState(false);
   const [burnedId, setBurnedId] = useState<string | null>(null);
   const [redeemSuccess, setRedeemSuccess] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'nfts' | 'rewards'>('nfts');
+  const [isInventoryLoading, setIsInventoryLoading] = useState(false);
+  const [inventoryNote, setInventoryNote] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchInventory() {
+      setIsInventoryLoading(true);
+      setInventoryNote('');
+
+      try {
+        const contractAddress = claimResponse?.rewardContract || REWARD_CONTRACT;
+        if (!walletAddress || !contractAddress) {
+          if (!cancelled) {
+            const fallback = claimedNfts.length > 0 ? claimedNfts : FALLBACK_NFTS;
+            setUserNfts(fallback);
+            if (!contractAddress) {
+              setInventoryNote('Reward contract not configured for OpenSea inventory sync.');
+            }
+          }
+          return;
+        }
+
+        const response = await fetch(
+          `/api/nfts-to-burn?address=${encodeURIComponent(walletAddress)}&contract=${encodeURIComponent(contractAddress)}&max=150`
+        );
+        const body = (await response.json().catch(() => ({}))) as BurnInventoryResponse;
+
+        if (!response.ok || !body.ok) {
+          throw new Error(body.error || 'Failed to load OpenSea inventory.');
+        }
+
+        const fromOpenSea = mapBurnInventoryToNfts(body.nfts || []);
+        if (!cancelled) {
+          if (fromOpenSea.length > 0) {
+            setUserNfts(fromOpenSea);
+            setInventoryNote(`OpenSea synced ${fromOpenSea.length} NFT(s) to burn.`);
+          } else {
+            const fallback = claimedNfts.length > 0 ? claimedNfts : FALLBACK_NFTS;
+            setUserNfts(fallback);
+            setInventoryNote('No burnable NFTs found on OpenSea for this wallet and contract.');
+          }
+        }
+      } catch (error) {
+        if (!cancelled) {
+          const fallback = claimedNfts.length > 0 ? claimedNfts : FALLBACK_NFTS;
+          setUserNfts(fallback);
+          setInventoryNote(error instanceof Error ? error.message : 'OpenSea inventory sync unavailable.');
+        }
+      } finally {
+        if (!cancelled) setIsInventoryLoading(false);
+      }
+    }
+
+    fetchInventory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [walletAddress, claimResponse?.rewardContract, claimedNfts]);
+
+  useEffect(() => {
+    if (activeTab !== 'nfts') {
+      setSelectedNft(null);
+    }
+  }, [activeTab]);
 
   const handleRedeem = (reward: Reward) => {
     if (balance < reward.cost) return;
@@ -291,76 +396,117 @@ function BurnWebsite({ walletAddress, claimResponse, claimedNfts }: BurnWebsiteP
           </div>
         </section>
 
-        <section id="gallery" className="mb-32">
-          <div className="flex items-center justify-between mb-12">
-            <h2 className="font-display text-4xl font-bold uppercase tracking-tighter">Your Reward Inventory</h2>
-            <div className="flex items-center gap-2 text-xs font-mono text-white/40">
-              <Info className="w-4 h-4" />
-              SELECT AN NFT TO BURN FOR CREDITS
+        <section className="mb-10">
+          <div className="glass-panel rounded-2xl p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => setActiveTab('nfts')}
+                className={`px-4 py-2 text-xs font-mono uppercase tracking-[0.14em] rounded-lg border ${
+                  activeTab === 'nfts'
+                    ? 'bg-white text-black border-white'
+                    : 'bg-black/40 text-white/70 border-white/20 hover:text-white'
+                }`}
+              >
+                NFTS TO BURN
+              </button>
+              <button
+                onClick={() => setActiveTab('rewards')}
+                className={`px-4 py-2 text-xs font-mono uppercase tracking-[0.14em] rounded-lg border ${
+                  activeTab === 'rewards'
+                    ? 'bg-white text-black border-white'
+                    : 'bg-black/40 text-white/70 border-white/20 hover:text-white'
+                }`}
+              >
+                REDEEMABLE REWARDS
+              </button>
             </div>
           </div>
-
-          {userNfts.length === 0 ? (
-            <div className="glass-panel rounded-3xl p-16 text-center text-white/50">
-              No claimed rewards left to burn.
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              <AnimatePresence mode="popLayout">
-                {userNfts.map((nft) => (
-                  <motion.div
-                    key={nft.id}
-                    layout
-                    initial={{ opacity: 0, scale: 0.9 }}
-                    animate={{
-                      opacity: burnedId === nft.id ? 0 : 1,
-                      scale: burnedId === nft.id ? 1.1 : 1,
-                      filter: burnedId === nft.id ? 'brightness(2) saturate(0)' : 'none'
-                    }}
-                    exit={{ opacity: 0, scale: 0.8 }}
-                    onClick={() => !isBurning && setSelectedNft(nft)}
-                    className={`group relative cursor-pointer rounded-2xl overflow-hidden brutalist-border ${selectedNft?.id === nft.id ? 'border-white ring-2 ring-white/20' : ''}`}
-                  >
-                    <div className="aspect-square overflow-hidden bg-neutral-900">
-                      <img
-                        src={nft.image}
-                        alt={nft.name}
-                        className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-700 group-hover:scale-110"
-                        referrerPolicy="no-referrer"
-                      />
-                    </div>
-
-                    <div className="p-6 bg-black/80 backdrop-blur-sm absolute bottom-0 left-0 right-0 border-t border-white/10">
-                      <div className="flex justify-between items-start mb-2">
-                        <div>
-                          <h3 className="font-display font-bold text-lg leading-none mb-1">{nft.name}</h3>
-                          <p className="text-[10px] font-mono text-white/40 uppercase tracking-widest">{nft.collection}</p>
-                        </div>
-                        <div className="px-2 py-1 bg-white/10 rounded text-[10px] font-mono uppercase">{nft.rarity}</div>
-                      </div>
-                      <div className="flex items-center justify-between mt-4">
-                        <div className="flex items-center gap-2">
-                          <Flame className="w-4 h-4 text-white/40" />
-                          <span className="font-mono text-sm font-bold">
-                            {nft.burnValue} <span className="text-white/40">VAL</span>
-                          </span>
-                        </div>
-                        {selectedNft?.id === nft.id ? (
-                          <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} className="bg-white text-black p-1 rounded-full">
-                            <Check className="w-4 h-4" />
-                          </motion.div>
-                        ) : null}
-                      </div>
-                    </div>
-                  </motion.div>
-                ))}
-              </AnimatePresence>
-            </div>
-          )}
         </section>
 
+        {activeTab === 'nfts' ? (
+          <section id="gallery" className="mb-32">
+            <div className="flex items-center justify-between mb-12">
+              <h2 className="font-display text-4xl font-bold uppercase tracking-tighter">NFTS TO BURN</h2>
+              <div className="flex items-center gap-2 text-xs font-mono text-white/40">
+                <Info className="w-4 h-4" />
+                SELECT AN NFT TO BURN FOR CREDITS
+              </div>
+            </div>
+
+            {isInventoryLoading ? (
+              <div className="glass-panel rounded-3xl p-10 text-center text-white/60">
+                Syncing OpenSea inventory...
+              </div>
+            ) : null}
+
+            {inventoryNote ? (
+              <div className="mb-6 rounded-xl border border-neutral-700/70 bg-neutral-900/70 px-4 py-3 text-xs font-mono text-neutral-300">
+                {inventoryNote}
+              </div>
+            ) : null}
+
+            {userNfts.length === 0 ? (
+              <div className="glass-panel rounded-3xl p-16 text-center text-white/50">
+                No claimed rewards left to burn.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <AnimatePresence mode="popLayout">
+                  {userNfts.map((nft) => (
+                    <motion.div
+                      key={nft.id}
+                      layout
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{
+                        opacity: burnedId === nft.id ? 0 : 1,
+                        scale: burnedId === nft.id ? 1.1 : 1,
+                        filter: burnedId === nft.id ? 'brightness(2) saturate(0)' : 'none'
+                      }}
+                      exit={{ opacity: 0, scale: 0.8 }}
+                      onClick={() => !isBurning && setSelectedNft(nft)}
+                      className={`group relative cursor-pointer rounded-2xl overflow-hidden brutalist-border ${selectedNft?.id === nft.id ? 'border-white ring-2 ring-white/20' : ''}`}
+                    >
+                      <div className="aspect-square overflow-hidden bg-neutral-900">
+                        <img
+                          src={nft.image}
+                          alt={nft.name}
+                          className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-700 group-hover:scale-110"
+                          referrerPolicy="no-referrer"
+                        />
+                      </div>
+
+                      <div className="p-6 bg-black/80 backdrop-blur-sm absolute bottom-0 left-0 right-0 border-t border-white/10">
+                        <div className="flex justify-between items-start mb-2">
+                          <div>
+                            <h3 className="font-display font-bold text-lg leading-none mb-1">{nft.name}</h3>
+                            <p className="text-[10px] font-mono text-white/40 uppercase tracking-widest">{nft.collection}</p>
+                          </div>
+                          <div className="px-2 py-1 bg-white/10 rounded text-[10px] font-mono uppercase">{nft.rarity}</div>
+                        </div>
+                        <div className="flex items-center justify-between mt-4">
+                          <div className="flex items-center gap-2">
+                            <Flame className="w-4 h-4 text-white/40" />
+                            <span className="font-mono text-sm font-bold">
+                              {nft.burnValue} <span className="text-white/40">VAL</span>
+                            </span>
+                          </div>
+                          {selectedNft?.id === nft.id ? (
+                            <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} className="bg-white text-black p-1 rounded-full">
+                              <Check className="w-4 h-4" />
+                            </motion.div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
+              </div>
+            )}
+          </section>
+        ) : null}
+
         <AnimatePresence>
-          {selectedNft ? (
+          {selectedNft && activeTab === 'nfts' ? (
             <motion.div
               initial={{ y: 100, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
@@ -415,49 +561,51 @@ function BurnWebsite({ walletAddress, claimResponse, claimedNfts }: BurnWebsiteP
           ) : null}
         </AnimatePresence>
 
-        <section id="redeem" className="mb-32">
-          <div className="flex items-center justify-between mb-12">
-            <h2 className="font-display text-4xl font-bold uppercase tracking-tighter">Redeemable Rewards</h2>
-            <div className="flex items-center gap-2 text-xs font-mono text-white/40">
-              <Zap className="w-4 h-4" />
-              USE CREDITS TO UNLOCK EXCLUSIVE ITEMS
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            {MOCK_REWARDS.map((reward) => (
-              <div key={reward.id} className="glass-panel rounded-3xl overflow-hidden flex flex-col">
-                <div className="aspect-[4/3] overflow-hidden">
-                  <img
-                    src={reward.image}
-                    alt={reward.name}
-                    className="w-full h-full object-cover grayscale hover:grayscale-0 transition-all duration-700"
-                    referrerPolicy="no-referrer"
-                  />
-                </div>
-                <div className="p-8 flex-grow flex flex-col">
-                  <div className="flex justify-between items-start mb-4">
-                    <h3 className="font-display font-bold text-2xl uppercase tracking-tighter leading-none">{reward.name}</h3>
-                    <div className="text-xs font-mono text-white/40">STOCK: {reward.stock}</div>
-                  </div>
-                  <p className="text-white/60 text-sm mb-8 leading-relaxed">{reward.description}</p>
-                  <div className="mt-auto pt-6 border-t border-white/10 flex items-center justify-between">
-                    <div className="font-mono text-xl font-bold">
-                      {reward.cost} <span className="text-white/40 text-xs">CREDITS</span>
-                    </div>
-                    <button
-                      onClick={() => handleRedeem(reward)}
-                      disabled={balance < reward.cost}
-                      className={`px-6 py-3 rounded-xl font-display font-bold uppercase tracking-tighter transition-all ${balance >= reward.cost ? 'bg-white text-black hover:scale-105 active:scale-95' : 'bg-white/5 text-white/20 cursor-not-allowed'}`}
-                    >
-                      Redeem
-                    </button>
-                  </div>
-                </div>
+        {activeTab === 'rewards' ? (
+          <section id="redeem" className="mb-32">
+            <div className="flex items-center justify-between mb-12">
+              <h2 className="font-display text-4xl font-bold uppercase tracking-tighter">Redeemable Rewards</h2>
+              <div className="flex items-center gap-2 text-xs font-mono text-white/40">
+                <Zap className="w-4 h-4" />
+                USE CREDITS TO UNLOCK EXCLUSIVE ITEMS
               </div>
-            ))}
-          </div>
-        </section>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+              {MOCK_REWARDS.map((reward) => (
+                <div key={reward.id} className="glass-panel rounded-3xl overflow-hidden flex flex-col">
+                  <div className="aspect-[4/3] overflow-hidden">
+                    <img
+                      src={reward.image}
+                      alt={reward.name}
+                      className="w-full h-full object-cover grayscale hover:grayscale-0 transition-all duration-700"
+                      referrerPolicy="no-referrer"
+                    />
+                  </div>
+                  <div className="p-8 flex-grow flex flex-col">
+                    <div className="flex justify-between items-start mb-4">
+                      <h3 className="font-display font-bold text-2xl uppercase tracking-tighter leading-none">{reward.name}</h3>
+                      <div className="text-xs font-mono text-white/40">STOCK: {reward.stock}</div>
+                    </div>
+                    <p className="text-white/60 text-sm mb-8 leading-relaxed">{reward.description}</p>
+                    <div className="mt-auto pt-6 border-t border-white/10 flex items-center justify-between">
+                      <div className="font-mono text-xl font-bold">
+                        {reward.cost} <span className="text-white/40 text-xs">CREDITS</span>
+                      </div>
+                      <button
+                        onClick={() => handleRedeem(reward)}
+                        disabled={balance < reward.cost}
+                        className={`px-6 py-3 rounded-xl font-display font-bold uppercase tracking-tighter transition-all ${balance >= reward.cost ? 'bg-white text-black hover:scale-105 active:scale-95' : 'bg-white/5 text-white/20 cursor-not-allowed'}`}
+                      >
+                        Redeem
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
       </main>
     </div>
   );

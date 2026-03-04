@@ -11,6 +11,7 @@ import {
   pickRandomRewardAllocations,
   verifyGatePass
 } from './_lib/claimUtils.js';
+import { extractUniqueTokenIds, fetchOpenSeaWalletContractNfts } from './_lib/opensea.js';
 import { getRuntimeConfigForRequest } from './_lib/runtimeOverrides.js';
 
 function requireEnv(name) {
@@ -229,7 +230,9 @@ export default async function handler(req, res) {
 
     const treasuryPrivateKey = runtime.treasuryPrivateKey || requireEnv('TREASURY_PRIVATE_KEY');
     const rewardContractAddress = normalizeAddress(runtime.rewardErc1155Contract || requireEnv('REWARD_ERC1155_CONTRACT'));
-    const rewardTokenIds = parseRewardTokenIds(runtime.rewardErc1155TokenIds || requireEnv('REWARD_ERC1155_TOKEN_IDS'));
+    const configuredRewardTokenIdsRaw = String(
+      runtime.rewardErc1155TokenIds || process.env.REWARD_ERC1155_TOKEN_IDS || ''
+    ).trim();
     const rewardNftsPerClaim = Number.parseInt(String(runtime.rewardNftsPerClaim || '20'), 10);
     const claimsPerGateToken = parsePositiveInt(runtime.claimsPerGateToken, 1);
     const rewardClaimStartBlock = parseNonNegativeInt(runtime.rewardClaimStartBlock, 0);
@@ -243,16 +246,38 @@ export default async function handler(req, res) {
       return res.status(500).json({ ok: false, error: 'REWARD_CLAIM_START_BLOCK must be configured for claim limit enforcement.' });
     }
 
-    if (rewardTokenIds.length === 0) {
-      return res.status(400).json({ ok: false, error: 'No valid REWARD_ERC1155_TOKEN_IDS configured.' });
-    }
-
     const treasurySigner = new ethers.Wallet(treasuryPrivateKey, provider);
     const treasuryAddress =
       String(runtime.treasuryWalletAddress || '').trim() || treasurySigner.address;
 
     if (treasuryAddress.toLowerCase() !== treasurySigner.address.toLowerCase()) {
       return res.status(500).json({ ok: false, error: 'TREASURY_WALLET_ADDRESS does not match TREASURY_PRIVATE_KEY.' });
+    }
+
+    let rewardTokenIds = parseRewardTokenIds(configuredRewardTokenIdsRaw);
+    let rewardTokenIdsSource = configuredRewardTokenIdsRaw ? 'config' : 'opensea';
+
+    if (rewardTokenIds.length === 0) {
+      const openseaItems = await fetchOpenSeaWalletContractNfts({
+        walletAddress: treasuryAddress,
+        contractAddress: rewardContractAddress,
+        chainId: runtime.chainId,
+        apiKey: process.env.OPENSEA_API_KEY,
+        mcpToken: process.env.OPENSEA_MCP_TOKEN,
+        perPage: 80,
+        maxItems: 1000,
+        timeoutMs: 12000
+      });
+
+      const discoveredTokenIds = extractUniqueTokenIds(openseaItems.nfts).map((tokenId) => BigInt(tokenId));
+      rewardTokenIds = discoveredTokenIds;
+    }
+
+    if (rewardTokenIds.length === 0) {
+      return res.status(400).json({
+        ok: false,
+        error: 'No reward token IDs found. Set REWARD_ERC1155_TOKEN_IDS or ensure OpenSea can index treasury balances.'
+      });
     }
 
     const gateTokenUnits = await getTokenGateUnits(provider, address, runtime);
@@ -334,6 +359,8 @@ export default async function handler(req, res) {
       blockNumber: receipt?.blockNumber ?? null,
       rewardContract: rewardContractAddress,
       rewardNftsPerClaim,
+      rewardTokenIdsSource,
+      rewardTokenIdsUsed: rewardTokenIds.map((value) => value.toString()),
       allocations: allocations.map((entry) => ({
         tokenId: entry.tokenId.toString(),
         amount: entry.amount.toString()
