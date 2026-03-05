@@ -1,12 +1,30 @@
 {
   "rewrites": [
     {
+      "source": "/api/indexer/progression-sync",
+      "destination": "/api/progression-stats?indexer=1"
+    },
+    {
+      "source": "/api/reward-cid-gallery",
+      "destination": "/api/reward-cid"
+    },
+    {
+      "source": "/api/reward-cid-mint",
+      "destination": "/api/reward-cid"
+    },
+    {
       "source": "/admin",
       "destination": "/index.html"
     },
     {
       "source": "/admin/:path*",
       "destination": "/index.html"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/indexer/progression-sync",
+      "schedule": "0 3 * * *"
     }
   ]
 }

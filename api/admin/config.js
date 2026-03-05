@@ -4,6 +4,7 @@ import {
   EDITABLE_OVERRIDE_KEYS,
   clearEditableConfig,
   getEditableConfig,
+  getRuntimeOverridePersistenceInfo,
   updateEditableConfig
 } from '../_lib/runtimeOverrides.js';
 
@@ -30,13 +31,17 @@ export default async function handler(req, res) {
   try {
     if (req.method === 'GET') {
       const { config, overrides, updatedAt } = await getEditableConfig();
+      const persistence = getRuntimeOverridePersistenceInfo();
       return res.status(200).json({
         ok: true,
         config,
         overrides,
         updatedAt,
         editableKeys: EDITABLE_OVERRIDE_KEYS,
-        note: 'Runtime overrides may reset when serverless instances restart.'
+        persistence,
+        note: persistence.durable
+          ? 'Runtime overrides are persisted in Vercel Blob storage.'
+          : 'Runtime overrides are stored in ephemeral /tmp storage and may reset when instances restart.'
       });
     }
 
@@ -44,24 +49,28 @@ export default async function handler(req, res) {
       const body = parseJsonBody(req);
       const patch = body?.config && typeof body.config === 'object' ? body.config : body;
       const { config, overrides, updatedAt } = await updateEditableConfig(patch || {});
+      const persistence = getRuntimeOverridePersistenceInfo();
       return res.status(200).json({
         ok: true,
         message: 'Config updated.',
         config,
         overrides,
         updatedAt,
+        persistence,
         editableKeys: EDITABLE_OVERRIDE_KEYS
       });
     }
 
     if (req.method === 'DELETE') {
       const { config, overrides, updatedAt } = await clearEditableConfig();
+      const persistence = getRuntimeOverridePersistenceInfo();
       return res.status(200).json({
         ok: true,
         message: 'Overrides cleared.',
         config,
         overrides,
         updatedAt,
+        persistence,
         editableKeys: EDITABLE_OVERRIDE_KEYS
       });
     }

@@ -5,6 +5,14 @@ function clean(value, fallback) {
   return parsed || fallback;
 }
 
+function parseToggle(value, fallback = true) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (['1', 'true', 'yes', 'on', 'enabled'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off', 'disabled'].includes(normalized)) return false;
+  return fallback;
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
     res.setHeader('Allow', 'GET');
@@ -37,6 +45,23 @@ export default async function handler(req, res) {
         rewardsTabLabel: clean(runtime.websiteRewardsTabLabel, 'REDEEMABLE REWARDS'),
         nftsSectionTitle: clean(runtime.websiteNftsSectionTitle, 'NFTS TO BURN'),
         rewardsSectionTitle: clean(runtime.websiteRewardsSectionTitle, 'Redeemable Rewards')
+      },
+      ui: {
+        showHeroPanel: parseToggle(runtime.websiteShowHeroPanel, true),
+        showEntryBanner: parseToggle(runtime.websiteShowEntryBanner, true),
+        showFooter: parseToggle(runtime.websiteShowFooter, true),
+        showTabNfts: parseToggle(runtime.websiteShowTabNfts, true),
+        showTabRewards: parseToggle(runtime.websiteShowTabRewards, true),
+        showTabB2R: parseToggle(runtime.websiteShowTabB2R, true),
+        showTabBonfire: parseToggle(runtime.websiteShowTabBonfire, true),
+        showTabForge: parseToggle(runtime.websiteShowTabForge, true),
+        showTabBurnchamber: parseToggle(runtime.websiteShowTabBurnchamber, true),
+        showTabNewworld: parseToggle(runtime.websiteShowTabNewworld, true),
+        showTabTipstarter: parseToggle(runtime.websiteShowTabTipstarter, true),
+        showTabMonochrome: parseToggle(runtime.websiteShowTabMonochrome, true),
+        showTabDestiny: parseToggle(runtime.websiteShowTabDestiny, true),
+        showTabKek: parseToggle(runtime.websiteShowTabKek, true),
+        showTabLeaderboard: parseToggle(runtime.websiteShowTabLeaderboard, true)
       }
     });
   } catch (error) {

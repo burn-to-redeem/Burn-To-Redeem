@@ -1,6 +1,15 @@
 import fs from 'node:fs/promises';
+import { list, put } from '@vercel/blob';
 
 const OVERRIDE_PATH = '/tmp/burn-to-redeem-runtime-overrides.json';
+const OVERRIDE_BLOB_PATH = String(process.env.RUNTIME_CONFIG_BLOB_PATH || 'state/runtime-overrides-v1.json').trim();
+const OVERRIDE_BACKEND = String(process.env.RUNTIME_CONFIG_BACKEND || '')
+  .trim()
+  .toLowerCase();
+const OVERRIDE_BLOB_TOKEN = String(
+  process.env.RUNTIME_CONFIG_BLOB_RW_TOKEN || process.env.BLOB_READ_WRITE_TOKEN || ''
+).trim();
+let cachedBlobOverridesUrl = null;
 
 export const EDITABLE_OVERRIDE_KEYS = [
   'BASE_RPC_URL',
@@ -16,6 +25,9 @@ export const EDITABLE_OVERRIDE_KEYS = [
   'CLAIM_MESSAGE_TTL_SECONDS',
   'GATE_PASS_TTL_SECONDS',
   'TREASURY_WALLET_ADDRESS',
+  'TIP_RECEIVER_ADDRESS',
+  'TIP_POINTS_PER_ETH',
+  'TIP_MIN_WEI',
   'REWARD_ERC1155_CONTRACT',
   'REWARD_COLLECTION_SLUG',
   'REWARD_ERC1155_TOKEN_IDS',
@@ -41,6 +53,8 @@ export const EDITABLE_OVERRIDE_KEYS = [
   'BURN_ALLOWED_COLLECTIONS',
   'REWARD_MUTABLE_NFT_CONTRACT',
   'REWARD_MINT_ENABLED',
+  'REWARD_AUTO_MINT_ON_BURN',
+  'REWARD_UNLOCK_CLAIM_MAX_BATCH',
   'BURN_REWARD_CID_1',
   'BURN_REWARD_CID_2',
   'BURN_REWARD_CID_3',
@@ -57,7 +71,22 @@ export const EDITABLE_OVERRIDE_KEYS = [
   'WEBSITE_NFTS_TAB_LABEL',
   'WEBSITE_REWARDS_TAB_LABEL',
   'WEBSITE_NFTS_SECTION_TITLE',
-  'WEBSITE_REWARDS_SECTION_TITLE'
+  'WEBSITE_REWARDS_SECTION_TITLE',
+  'WEBSITE_SHOW_HERO_PANEL',
+  'WEBSITE_SHOW_ENTRY_BANNER',
+  'WEBSITE_SHOW_FOOTER',
+  'WEBSITE_SHOW_TAB_NFTS',
+  'WEBSITE_SHOW_TAB_REWARDS',
+  'WEBSITE_SHOW_TAB_B2R',
+  'WEBSITE_SHOW_TAB_BONFIRE',
+  'WEBSITE_SHOW_TAB_FORGE',
+  'WEBSITE_SHOW_TAB_BURNCHAMBER',
+  'WEBSITE_SHOW_TAB_NEWWORLD',
+  'WEBSITE_SHOW_TAB_TIPSTARTER',
+  'WEBSITE_SHOW_TAB_MONOCHROME',
+  'WEBSITE_SHOW_TAB_DESTINY',
+  'WEBSITE_SHOW_TAB_KEK',
+  'WEBSITE_SHOW_TAB_LEADERBOARD'
 ];
 
 const DEFAULT_EDITABLE_CONFIG = {
@@ -74,6 +103,9 @@ const DEFAULT_EDITABLE_CONFIG = {
   CLAIM_MESSAGE_TTL_SECONDS: process.env.CLAIM_MESSAGE_TTL_SECONDS || '300',
   GATE_PASS_TTL_SECONDS: process.env.GATE_PASS_TTL_SECONDS || '900',
   TREASURY_WALLET_ADDRESS: process.env.TREASURY_WALLET_ADDRESS || '',
+  TIP_RECEIVER_ADDRESS: process.env.TIP_RECEIVER_ADDRESS || process.env.TREASURY_WALLET_ADDRESS || '',
+  TIP_POINTS_PER_ETH: process.env.TIP_POINTS_PER_ETH || '20000',
+  TIP_MIN_WEI: process.env.TIP_MIN_WEI || '1000000000000000',
   REWARD_ERC1155_CONTRACT: process.env.REWARD_ERC1155_CONTRACT || '',
   REWARD_COLLECTION_SLUG: process.env.REWARD_COLLECTION_SLUG || 'cc0-by-pierre',
   REWARD_ERC1155_TOKEN_IDS: process.env.REWARD_ERC1155_TOKEN_IDS || '',
@@ -99,6 +131,8 @@ const DEFAULT_EDITABLE_CONFIG = {
   BURN_ALLOWED_COLLECTIONS: process.env.BURN_ALLOWED_COLLECTIONS || '',
   REWARD_MUTABLE_NFT_CONTRACT: process.env.REWARD_MUTABLE_NFT_CONTRACT || '',
   REWARD_MINT_ENABLED: process.env.REWARD_MINT_ENABLED || '1',
+  REWARD_AUTO_MINT_ON_BURN: process.env.REWARD_AUTO_MINT_ON_BURN || '0',
+  REWARD_UNLOCK_CLAIM_MAX_BATCH: process.env.REWARD_UNLOCK_CLAIM_MAX_BATCH || '20',
   BURN_REWARD_CID_1: process.env.BURN_REWARD_CID_1 || 'QmNyJSVK6ciyxLq25Eurj79oMKfKRfUYzCg8DLyctUm7Tr',
   BURN_REWARD_CID_2: process.env.BURN_REWARD_CID_2 || 'QmXbeKSz5NSPKikU98MhAGQoLgboEwqdtGiNoCBpJvTkni',
   BURN_REWARD_CID_3: process.env.BURN_REWARD_CID_3 || 'Qmbd2iuUvASpBrmcaz8ZzTaSkFf6VAgQYwaQnV9mDK4gQt',
@@ -122,7 +156,22 @@ const DEFAULT_EDITABLE_CONFIG = {
   WEBSITE_NFTS_TAB_LABEL: process.env.WEBSITE_NFTS_TAB_LABEL || 'NFTS TO BURN',
   WEBSITE_REWARDS_TAB_LABEL: process.env.WEBSITE_REWARDS_TAB_LABEL || 'REDEEMABLE REWARDS',
   WEBSITE_NFTS_SECTION_TITLE: process.env.WEBSITE_NFTS_SECTION_TITLE || 'NFTS TO BURN',
-  WEBSITE_REWARDS_SECTION_TITLE: process.env.WEBSITE_REWARDS_SECTION_TITLE || 'Redeemable Rewards'
+  WEBSITE_REWARDS_SECTION_TITLE: process.env.WEBSITE_REWARDS_SECTION_TITLE || 'Redeemable Rewards',
+  WEBSITE_SHOW_HERO_PANEL: process.env.WEBSITE_SHOW_HERO_PANEL || '1',
+  WEBSITE_SHOW_ENTRY_BANNER: process.env.WEBSITE_SHOW_ENTRY_BANNER || '1',
+  WEBSITE_SHOW_FOOTER: process.env.WEBSITE_SHOW_FOOTER || '1',
+  WEBSITE_SHOW_TAB_NFTS: process.env.WEBSITE_SHOW_TAB_NFTS || '1',
+  WEBSITE_SHOW_TAB_REWARDS: process.env.WEBSITE_SHOW_TAB_REWARDS || '1',
+  WEBSITE_SHOW_TAB_B2R: process.env.WEBSITE_SHOW_TAB_B2R || '1',
+  WEBSITE_SHOW_TAB_BONFIRE: process.env.WEBSITE_SHOW_TAB_BONFIRE || '1',
+  WEBSITE_SHOW_TAB_FORGE: process.env.WEBSITE_SHOW_TAB_FORGE || '1',
+  WEBSITE_SHOW_TAB_BURNCHAMBER: process.env.WEBSITE_SHOW_TAB_BURNCHAMBER || '1',
+  WEBSITE_SHOW_TAB_NEWWORLD: process.env.WEBSITE_SHOW_TAB_NEWWORLD || '1',
+  WEBSITE_SHOW_TAB_TIPSTARTER: process.env.WEBSITE_SHOW_TAB_TIPSTARTER || '1',
+  WEBSITE_SHOW_TAB_MONOCHROME: process.env.WEBSITE_SHOW_TAB_MONOCHROME || '1',
+  WEBSITE_SHOW_TAB_DESTINY: process.env.WEBSITE_SHOW_TAB_DESTINY || '1',
+  WEBSITE_SHOW_TAB_KEK: process.env.WEBSITE_SHOW_TAB_KEK || '1',
+  WEBSITE_SHOW_TAB_LEADERBOARD: process.env.WEBSITE_SHOW_TAB_LEADERBOARD || '1'
 };
 
 function parsePositiveInt(value, fallback) {
@@ -130,7 +179,81 @@ function parsePositiveInt(value, fallback) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function shouldUseBlobBackend() {
+  if (!OVERRIDE_BLOB_TOKEN || !OVERRIDE_BLOB_PATH) {
+    return false;
+  }
+  if (!OVERRIDE_BACKEND) {
+    return true;
+  }
+  return OVERRIDE_BACKEND === 'blob' || OVERRIDE_BACKEND === 'vercel_blob' || OVERRIDE_BACKEND === 'auto';
+}
+
+async function readStoreFromBlob() {
+  if (!shouldUseBlobBackend()) return null;
+
+  try {
+    if (!cachedBlobOverridesUrl) {
+      const listed = await list({
+        token: OVERRIDE_BLOB_TOKEN,
+        prefix: OVERRIDE_BLOB_PATH,
+        limit: 8
+      });
+      const blobs = Array.isArray(listed?.blobs) ? listed.blobs : [];
+      const exact = blobs.find((entry) => entry?.pathname === OVERRIDE_BLOB_PATH) || blobs[0];
+      if (!exact?.url) {
+        return null;
+      }
+      cachedBlobOverridesUrl = exact.url;
+    }
+
+    const response = await fetch(cachedBlobOverridesUrl, { cache: 'no-store' });
+    if (response.status === 404) {
+      cachedBlobOverridesUrl = null;
+      return null;
+    }
+    if (!response.ok) {
+      throw new Error(`Runtime override blob read failed with status ${response.status}`);
+    }
+
+    const text = await response.text();
+    if (!text.trim()) {
+      return { overrides: {}, updatedAt: null };
+    }
+    const parsed = JSON.parse(text);
+    const overrides = parsed?.overrides && typeof parsed.overrides === 'object' ? parsed.overrides : {};
+    const updatedAt = typeof parsed?.updatedAt === 'string' ? parsed.updatedAt : null;
+    return { overrides, updatedAt };
+  } catch {
+    cachedBlobOverridesUrl = null;
+    return null;
+  }
+}
+
+async function writeStoreToBlob(payload) {
+  if (!shouldUseBlobBackend()) return false;
+
+  try {
+    const blob = await put(OVERRIDE_BLOB_PATH, JSON.stringify(payload), {
+      token: OVERRIDE_BLOB_TOKEN,
+      access: 'public',
+      addRandomSuffix: false,
+      allowOverwrite: true,
+      contentType: 'application/json; charset=utf-8'
+    });
+    cachedBlobOverridesUrl = blob?.url || cachedBlobOverridesUrl;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function readStore() {
+  const fromBlob = await readStoreFromBlob();
+  if (fromBlob !== null) {
+    return fromBlob;
+  }
+
   try {
     const raw = await fs.readFile(OVERRIDE_PATH, 'utf8');
     const parsed = JSON.parse(raw);
@@ -159,6 +282,9 @@ function buildRuntimeFromConfig(config, overrides, updatedAt) {
     claimMessageTtlSeconds: parsePositiveInt(config.CLAIM_MESSAGE_TTL_SECONDS, 300),
     gatePassTtlSeconds: parsePositiveInt(config.GATE_PASS_TTL_SECONDS, 900),
     treasuryWalletAddress: config.TREASURY_WALLET_ADDRESS,
+    tipReceiverAddress: config.TIP_RECEIVER_ADDRESS || config.TREASURY_WALLET_ADDRESS || '',
+    tipPointsPerEth: parsePositiveInt(config.TIP_POINTS_PER_ETH, 20000),
+    tipMinWei: String(config.TIP_MIN_WEI || '1000000000000000').trim(),
     rewardErc1155Contract: config.REWARD_ERC1155_CONTRACT,
     rewardCollectionSlug: config.REWARD_COLLECTION_SLUG || 'cc0-by-pierre',
     rewardErc1155TokenIds: config.REWARD_ERC1155_TOKEN_IDS,
@@ -184,6 +310,8 @@ function buildRuntimeFromConfig(config, overrides, updatedAt) {
     burnAllowedCollections: config.BURN_ALLOWED_COLLECTIONS,
     rewardMutableNftContract: config.REWARD_MUTABLE_NFT_CONTRACT,
     rewardMintEnabled: config.REWARD_MINT_ENABLED,
+    rewardAutoMintOnBurn: config.REWARD_AUTO_MINT_ON_BURN,
+    rewardUnlockClaimMaxBatch: parsePositiveInt(config.REWARD_UNLOCK_CLAIM_MAX_BATCH, 20),
     burnRewardCid1: config.BURN_REWARD_CID_1 || '',
     burnRewardCid2: config.BURN_REWARD_CID_2 || '',
     burnRewardCid3: config.BURN_REWARD_CID_3 || '',
@@ -201,6 +329,21 @@ function buildRuntimeFromConfig(config, overrides, updatedAt) {
     websiteRewardsTabLabel: config.WEBSITE_REWARDS_TAB_LABEL,
     websiteNftsSectionTitle: config.WEBSITE_NFTS_SECTION_TITLE,
     websiteRewardsSectionTitle: config.WEBSITE_REWARDS_SECTION_TITLE,
+    websiteShowHeroPanel: config.WEBSITE_SHOW_HERO_PANEL,
+    websiteShowEntryBanner: config.WEBSITE_SHOW_ENTRY_BANNER,
+    websiteShowFooter: config.WEBSITE_SHOW_FOOTER,
+    websiteShowTabNfts: config.WEBSITE_SHOW_TAB_NFTS,
+    websiteShowTabRewards: config.WEBSITE_SHOW_TAB_REWARDS,
+    websiteShowTabB2R: config.WEBSITE_SHOW_TAB_B2R,
+    websiteShowTabBonfire: config.WEBSITE_SHOW_TAB_BONFIRE,
+    websiteShowTabForge: config.WEBSITE_SHOW_TAB_FORGE,
+    websiteShowTabBurnchamber: config.WEBSITE_SHOW_TAB_BURNCHAMBER,
+    websiteShowTabNewworld: config.WEBSITE_SHOW_TAB_NEWWORLD,
+    websiteShowTabTipstarter: config.WEBSITE_SHOW_TAB_TIPSTARTER,
+    websiteShowTabMonochrome: config.WEBSITE_SHOW_TAB_MONOCHROME,
+    websiteShowTabDestiny: config.WEBSITE_SHOW_TAB_DESTINY,
+    websiteShowTabKek: config.WEBSITE_SHOW_TAB_KEK,
+    websiteShowTabLeaderboard: config.WEBSITE_SHOW_TAB_LEADERBOARD,
     claimSigningSecret: (process.env.CLAIM_SIGNING_SECRET || '').trim(),
     treasuryPrivateKey: (process.env.TREASURY_PRIVATE_KEY || '').trim(),
     overrides,
@@ -213,7 +356,12 @@ async function writeStore(overrides) {
     updatedAt: new Date().toISOString(),
     overrides
   };
-  await fs.writeFile(OVERRIDE_PATH, JSON.stringify(payload, null, 2), 'utf8');
+
+  const wroteBlob = await writeStoreToBlob(payload);
+  if (!wroteBlob) {
+    await fs.writeFile(OVERRIDE_PATH, JSON.stringify(payload, null, 2), 'utf8');
+  }
+
   return payload;
 }
 
@@ -281,6 +429,15 @@ export async function updateEditableConfig(patch) {
 export async function clearEditableConfig() {
   await writeStore({});
   return getEditableConfig();
+}
+
+export function getRuntimeOverridePersistenceInfo() {
+  const usingBlob = shouldUseBlobBackend();
+  return {
+    backend: usingBlob ? 'vercel_blob' : 'tmp',
+    durable: usingBlob,
+    path: usingBlob ? OVERRIDE_BLOB_PATH : OVERRIDE_PATH
+  };
 }
 
 export async function getRuntimeConfig() {

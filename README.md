@@ -42,6 +42,8 @@ Required:
 - `REWARD_TOKEN_DISCOVERY_MAX_ITEMS`
 - `OPENSEA_API_KEY` (used for `NFTS TO BURN` gallery and automatic reward token ID discovery)
 - `OPENSEA_MCP_TOKEN` (optional alternative/extra auth header for OpenSea calls)
+- `OPENSEA_HTTP_RETRY_ATTEMPTS` / `OPENSEA_HTTP_RETRY_DELAY_MS` (retry tuning for transient OpenSea 429/5xx responses)
+- `NFTS_TO_BURN_CACHE_TTL_SECONDS` / `NFTS_TO_BURN_CACHE_STALE_SECONDS` (burn gallery cache + stale fallback window)
 - `REWARD_GAS_MODE` (`lowest` recommended)
 - `REWARD_MIN_PRIORITY_GWEI`
 - `REWARD_BASE_FEE_MULTIPLIER_BPS`
@@ -59,6 +61,16 @@ Required:
 - `ADMIN_SESSION_SECRET`
 - `ADMIN_SESSION_TTL_SECONDS`
 - `RUNTIME_CONFIG_INTERNAL_SECRET`
+- `RUNTIME_CONFIG_BACKEND` (`blob` recommended for durable admin runtime overrides)
+- `RUNTIME_CONFIG_BLOB_PATH` (default `state/runtime-overrides-v1.json`)
+- `RUNTIME_CONFIG_BLOB_RW_TOKEN` (optional token override; otherwise uses `BLOB_READ_WRITE_TOKEN`)
+- `PROGRESSION_STATE_BACKEND` (`blob` or `postgres`; use `postgres` for scalable durable leaderboard/progression state)
+- `PROGRESSION_POSTGRES_URL` (required when `PROGRESSION_STATE_BACKEND=postgres`; `POSTGRES_URL` is used as fallback)
+- `PROGRESSION_POSTGRES_POOL_MAX` (optional, default `5`)
+- `PROGRESSION_BLOB_STATE_PATH` (default `state/progression-v1.json` when blob backend is used)
+- `PROGRESSION_BLOB_RW_TOKEN` (optional token override; otherwise uses `BLOB_READ_WRITE_TOKEN`)
+- `PROGRESSION_INDEXER_SECRET` (optional shared secret for manual indexer triggers)
+- `PROGRESSION_INDEXER_MAX_WALLETS` (max tracked wallets scanned per cron run)
 - `WEBSITE_*` copy keys (see `.env.example`) if you want deploy-time defaults for website text
 
 ## Security notes
@@ -83,7 +95,7 @@ Admin auth endpoints:
 - `DELETE /api/admin/config` to clear overrides
 - `POST /api/admin/logout` to clear admin session
 
-Note: runtime overrides are stored in serverless runtime storage and may reset when instances restart. Use Vercel env vars for durable defaults.
+Note: runtime overrides are persisted durably when Blob is enabled (`RUNTIME_CONFIG_BACKEND=blob` + Blob token). Otherwise they fall back to ephemeral `/tmp` storage.
 
 Admin UI:
 
@@ -104,6 +116,18 @@ npm run dev
 ## Deploy
 
 Deploy to Vercel and set env vars in the project dashboard.
+
+### Autonomous progression indexer
+
+- Cron endpoint: `GET /api/indexer/progression-sync` (rewritten to `/api/progression-stats?indexer=1`)
+- Default schedule in `vercel.json`: daily at `03:00` UTC (`0 3 * * *`) to match Vercel Hobby limits.
+- This scans known participant wallets, ingests any missed burn txs, and keeps:
+  - leaderboard points
+  - burn units
+  - unlocked claimable rewards
+  in sync without requiring users to open the app first.
+- Manual run (if secret configured):  
+  `GET /api/progression-stats?indexer=1&indexerSecret=YOUR_SECRET`
 
 ## Contract deployment (Base)
 

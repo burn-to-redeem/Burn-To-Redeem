@@ -1,10 +1,15 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs/promises';
 import { ethers } from 'ethers';
 import { normalizeAddress, parseJsonBody } from './_lib/claimUtils.js';
 import { getRuntimeConfigForRequest } from './_lib/runtimeOverrides.js';
+import {
+  hasProcessedBurnTx,
+  readProgressionState,
+  recordBurnProgress,
+  recordClaimProgress,
+  writeProgressionState
+} from './_lib/progressionState.js';
 
-const BURN_REWARD_STATE_PATH = '/tmp/burn-to-redeem-burn-reward-state.json';
 const DEAD_ADDRESS = '0x000000000000000000000000000000000000dEaD';
 const ERC721_TRANSFER_TOPIC = ethers.id('Transfer(address,address,uint256)');
 const TRANSFER_SINGLE_TOPIC = ethers.id('TransferSingle(address,address,address,uint256,uint256)');
@@ -119,25 +124,6 @@ async function withProviders(providers, run) {
     }
   }
   throw lastError || new Error('RPC request failed.');
-}
-
-async function readState() {
-  try {
-    const raw = await fs.readFile(BURN_REWARD_STATE_PATH, 'utf8');
-    const parsed = JSON.parse(raw);
-    const txHashes = Array.isArray(parsed?.processedTxHashes) ? parsed.processedTxHashes : [];
-    return new Set(txHashes.map((value) => String(value).toLowerCase()));
-  } catch {
-    return new Set();
-  }
-}
-
-async function writeState(processedTxHashes) {
-  await fs.writeFile(
-    BURN_REWARD_STATE_PATH,
-    JSON.stringify({ processedTxHashes: Array.from(processedTxHashes) }, null, 2),
-    'utf8'
-  );
 }
 
 function buildBurnToTopics() {
@@ -452,8 +438,8 @@ export default async function handler(req, res) {
       return res.status(400).json({ ok: false, error: 'No burn reward CIDs configured in backend.' });
     }
 
-    const processedTxHashes = await readState();
-    if (processedTxHashes.has(burnTxHash)) {
+    const progressionState = await readProgressionState();
+    if (await hasProcessedBurnTx(progressionState, burnTxHash)) {
       return res.status(409).json({ ok: false, error: 'This burn transaction was already processed.' });
     }
 
@@ -528,49 +514,97 @@ export default async function handler(req, res) {
       });
     }
 
-    const mintProvider = await withProviders(providers, async (provider) => {
-      await provider.getBlockNumber();
-      return provider;
+    const creditsAwarded = burnedUnits * 20;
+    const burnRecorded = await recordBurnProgress(progressionState, {
+      address,
+      burnTxHash,
+      burnedUnits,
+      creditsAwarded,
+      burnMode,
+      burnedTokenIds: burnedTokenIds.filter(Boolean),
+      burnedCollections: burnedCollections.filter(Boolean),
+      contractAddress: txTo.toLowerCase(),
+      blockNumber: Number(receipt.blockNumber || 0),
+      timestamp: new Date().toISOString()
     });
 
-    const rewardMutableNftContractRaw = String(runtime.rewardMutableNftContract || '').trim();
-    if (!rewardMutableNftContractRaw) {
-      return res.status(500).json({
-        ok: false,
-        error: 'REWARD_MUTABLE_NFT_CONTRACT is not configured.'
-      });
+    if (burnRecorded.alreadyProcessed) {
+      return res.status(409).json({ ok: false, error: 'This burn transaction was already processed.' });
     }
 
-    const rewardMutableNftContract = normalizeAddress(rewardMutableNftContractRaw);
+    let savedProgression = await writeProgressionState(progressionState);
+
+    const shouldAutoMintOnBurn = parseBoolean(runtime.rewardAutoMintOnBurn, false);
+    const rewardMutableNftContractRaw = String(runtime.rewardMutableNftContract || '').trim();
+    const rewardMutableNftContract = rewardMutableNftContractRaw
+      ? normalizeAddress(rewardMutableNftContractRaw)
+      : null;
     const mintCount = Math.max(1, Math.min(burnedUnits, 20));
-    const { cidCounts, lastMintedCid } = await collectWalletMintedCidStats({
-      provider: mintProvider,
-      runtime,
-      rewardContractAddress: rewardMutableNftContract,
-      walletAddress: address
-    });
+    let wins = [];
+    let mintResult = {
+      rewardMintEnabled: false,
+      rewardMutableNftContract: rewardMutableNftContract || null,
+      mintTxHash: null,
+      mintedRewards: []
+    };
 
-    const selectedCids = pickGuaranteedRewardCids({
-      rewardCids,
-      cidCounts,
-      lastMintedCid,
-      desiredCount: mintCount
-    });
-    const wins = selectedCids.map((cid) => ({
-      cid,
-      tokenUri: `ipfs://${cid}`,
-      imageUrl: `https://ipfs.io/ipfs/${cid}`
-    }));
+    if (shouldAutoMintOnBurn) {
+      if (!rewardMutableNftContract) {
+        return res.status(500).json({
+          ok: false,
+          error: 'REWARD_MUTABLE_NFT_CONTRACT is not configured.'
+        });
+      }
 
-    const mintResult = await mintCidRewards({
-      provider: mintProvider,
-      runtime,
-      recipient: address,
-      wins
-    });
+      const mintProvider = await withProviders(providers, async (provider) => {
+        await provider.getBlockNumber();
+        return provider;
+      });
+      const { cidCounts, lastMintedCid } = await collectWalletMintedCidStats({
+        provider: mintProvider,
+        runtime,
+        rewardContractAddress: rewardMutableNftContract,
+        walletAddress: address
+      });
 
-    processedTxHashes.add(burnTxHash);
-    await writeState(processedTxHashes);
+      const selectedCids = pickGuaranteedRewardCids({
+        rewardCids,
+        cidCounts,
+        lastMintedCid,
+        desiredCount: mintCount
+      });
+      wins = selectedCids.map((cid) => ({
+        cid,
+        tokenUri: `ipfs://${cid}`,
+        imageUrl: `https://ipfs.io/ipfs/${cid}`
+      }));
+
+      mintResult = await mintCidRewards({
+        provider: mintProvider,
+        runtime,
+        recipient: address,
+        wins
+      });
+
+      const claimedUnits = Array.isArray(mintResult.mintedRewards)
+        ? mintResult.mintedRewards.length
+        : 0;
+      if (claimedUnits > 0) {
+        await recordClaimProgress(progressionState, {
+          address,
+          claimUnits: claimedUnits,
+          claimTxHash: mintResult.mintTxHash,
+          mintedTokenIds: mintResult.mintedRewards.map((entry) => entry.tokenId),
+          mintedCids: wins.map((entry) => entry.cid),
+          timestamp: new Date().toISOString()
+        });
+        savedProgression = await writeProgressionState(progressionState);
+      }
+    }
+    const walletProgress = burnRecorded.wallet || null;
+    const claimableRewards = walletProgress
+      ? Math.max(0, Number(walletProgress.claimableRewards || 0))
+      : 0;
 
     return res.status(200).json({
       ok: true,
@@ -579,15 +613,22 @@ export default async function handler(req, res) {
       burnedUnits,
       burnedTokenIds: burnedTokenIds.filter(Boolean),
       burnedCollections: burnedCollections.filter(Boolean),
-      creditsAwarded: burnedUnits * 20,
-      rewardPolicy: 'Guaranteed mint on burn; anti-duplicate balancing per wallet.',
+      creditsAwarded,
+      rewardPolicy: shouldAutoMintOnBurn
+        ? 'Guaranteed mint on burn; anti-duplicate balancing per wallet.'
+        : 'Burn unlocks claimable reward mints; claim from Redeemable Rewards tab.',
       configuredCidCount: rewardCids.length,
       mintedCountRequested: mintCount,
       wins,
       rewardMintEnabled: mintResult.rewardMintEnabled,
       rewardMutableNftContract: mintResult.rewardMutableNftContract,
       mintTxHash: mintResult.mintTxHash,
-      mintedRewards: mintResult.mintedRewards
+      mintedRewards: mintResult.mintedRewards,
+      autoMintOnBurn: shouldAutoMintOnBurn,
+      progressionUpdatedAt: savedProgression.updatedAt,
+      walletProgress,
+      unlockedRewards: walletProgress?.unlockedRewards || 0,
+      claimableRewards
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unexpected server error';

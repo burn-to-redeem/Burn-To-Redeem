@@ -6,6 +6,12 @@ function cleanString(value) {
   return String(value || '').trim();
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 function clampInt(value, fallback, min, max) {
   const parsed = Number.parseInt(String(value || ''), 10);
   if (!Number.isFinite(parsed)) return fallback;
@@ -117,9 +123,14 @@ function normalizeNft(nft, chainHint) {
   };
 }
 
-async function fetchOpenSeaJson(url, { apiKey, mcpToken, timeoutMs }) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+async function fetchOpenSeaJson(
+  url,
+  { apiKey, mcpToken, timeoutMs, retryAttempts = 3, retryDelayMs = 450, retryMaxDelayMs = 4000 }
+) {
+  const attempts = clampInt(retryAttempts, 3, 1, 8);
+  const baseDelay = clampInt(retryDelayMs, 450, 50, 10000);
+  const maxDelay = clampInt(retryMaxDelayMs, 4000, 100, 20000);
+
   const headers = {
     accept: 'application/json',
     'user-agent': 'burn-to-redeem/1.0'
@@ -130,42 +141,81 @@ async function fetchOpenSeaJson(url, { apiKey, mcpToken, timeoutMs }) {
   if (cleanedApiKey) headers['x-api-key'] = cleanedApiKey;
   if (cleanedMcpToken) headers.authorization = `Bearer ${cleanedMcpToken}`;
 
-  try {
-    const response = await fetch(url, {
-      method: 'GET',
-      headers,
-      cache: 'no-store',
-      signal: controller.signal
-    });
+  let lastError = null;
 
-    const text = await response.text();
-    let json = {};
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
     try {
-      json = text ? JSON.parse(text) : {};
-    } catch {
-      json = {};
-    }
+      const response = await fetch(url, {
+        method: 'GET',
+        headers,
+        cache: 'no-store',
+        signal: controller.signal
+      });
 
-    if (!response.ok) {
-      const message =
-        cleanString(json?.errors?.[0] || json?.error || json?.detail || json?.message) ||
-        `OpenSea request failed (${response.status}).`;
-      const error = new Error(message);
-      error.statusCode = response.status;
-      throw error;
-    }
+      const text = await response.text();
+      let json = {};
+      try {
+        json = text ? JSON.parse(text) : {};
+      } catch {
+        json = {};
+      }
 
-    return json;
-  } catch (error) {
-    if (error && error.name === 'AbortError') {
-      const timeoutError = new Error(`OpenSea request timed out after ${timeoutMs}ms.`);
-      timeoutError.statusCode = 504;
-      throw timeoutError;
+      if (!response.ok) {
+        const message =
+          cleanString(json?.errors?.[0] || json?.error || json?.detail || json?.message) ||
+          `OpenSea request failed (${response.status}).`;
+        const error = new Error(message);
+        error.statusCode = response.status;
+
+        const retryAfterRaw = cleanString(response.headers?.get?.('retry-after'));
+        if (/^\d+$/.test(retryAfterRaw)) {
+          error.retryAfterMs = Number.parseInt(retryAfterRaw, 10) * 1000;
+        }
+
+        const retriable =
+          response.status === 429 || response.status === 408 || response.status === 504 || response.status >= 500;
+        if (!retriable || attempt >= attempts) {
+          throw error;
+        }
+
+        const serverDelay =
+          Number.isFinite(error.retryAfterMs) && error.retryAfterMs > 0 ? error.retryAfterMs : 0;
+        const exponentialDelay = Math.min(maxDelay, baseDelay * 2 ** (attempt - 1));
+        const delay = Math.max(serverDelay, exponentialDelay);
+        await sleep(delay);
+        continue;
+      }
+
+      return json;
+    } catch (error) {
+      if (error && error.name === 'AbortError') {
+        const timeoutError = new Error(`OpenSea request timed out after ${timeoutMs}ms.`);
+        timeoutError.statusCode = 504;
+        lastError = timeoutError;
+      } else {
+        lastError = error;
+      }
+
+      const statusCode = Number(lastError?.statusCode || 0);
+      const retriable =
+        statusCode === 429 || statusCode === 408 || statusCode === 504 || statusCode >= 500;
+      if (!retriable || attempt >= attempts) {
+        throw lastError;
+      }
+
+      const retryAfterMs = Number(lastError?.retryAfterMs || 0);
+      const exponentialDelay = Math.min(maxDelay, baseDelay * 2 ** (attempt - 1));
+      const delay = Math.max(retryAfterMs > 0 ? retryAfterMs : 0, exponentialDelay);
+      await sleep(delay);
+    } finally {
+      clearTimeout(timeout);
     }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
   }
+
+  throw lastError || new Error('OpenSea request failed.');
 }
 
 export async function fetchOpenSeaWalletContractNfts({
@@ -176,7 +226,9 @@ export async function fetchOpenSeaWalletContractNfts({
   mcpToken,
   perPage = 50,
   maxItems = 250,
-  timeoutMs = 12000
+  timeoutMs = 12000,
+  retryAttempts = process.env.OPENSEA_HTTP_RETRY_ATTEMPTS,
+  retryDelayMs = process.env.OPENSEA_HTTP_RETRY_DELAY_MS
 }) {
   const chain = inferOpenSeaChainFromChainId(chainId);
   const normalizedWallet = ethers.getAddress(walletAddress);
@@ -197,7 +249,13 @@ export async function fetchOpenSeaWalletContractNfts({
         next,
         collection: queryContractFilter || ''
       });
-      const payload = await fetchOpenSeaJson(url, { apiKey, mcpToken, timeoutMs });
+      const payload = await fetchOpenSeaJson(url, {
+        apiKey,
+        mcpToken,
+        timeoutMs,
+        retryAttempts,
+        retryDelayMs
+      });
       const nfts = Array.isArray(payload?.nfts) ? payload.nfts : [];
 
       for (const raw of nfts) {
@@ -244,7 +302,9 @@ export async function fetchOpenSeaWalletCollectionNfts({
   mcpToken,
   perPage = 50,
   maxItems = 250,
-  timeoutMs = 12000
+  timeoutMs = 12000,
+  retryAttempts = process.env.OPENSEA_HTTP_RETRY_ATTEMPTS,
+  retryDelayMs = process.env.OPENSEA_HTTP_RETRY_DELAY_MS
 }) {
   const chain = inferOpenSeaChainFromChainId(chainId);
   const normalizedWallet = ethers.getAddress(walletAddress);
@@ -278,7 +338,13 @@ export async function fetchOpenSeaWalletCollectionNfts({
         next,
         collection: queryCollection || ''
       });
-      const payload = await fetchOpenSeaJson(url, { apiKey, mcpToken, timeoutMs });
+      const payload = await fetchOpenSeaJson(url, {
+        apiKey,
+        mcpToken,
+        timeoutMs,
+        retryAttempts,
+        retryDelayMs
+      });
       const nfts = Array.isArray(payload?.nfts) ? payload.nfts : [];
 
       for (const raw of nfts) {

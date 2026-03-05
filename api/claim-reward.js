@@ -943,6 +943,18 @@ export default async function handler(req, res) {
       runtime
     });
 
+    const walletClaimCountAfter = walletClaimCount + 1;
+    const claimsRemainingAfter =
+      maxClaimsAllowed > BigInt(walletClaimCountAfter)
+        ? maxClaimsAllowed - BigInt(walletClaimCountAfter)
+        : 0n;
+    const unclaimedGateTokenIdsAfter =
+      gateTokenClaimMode === 'erc721_token_id_once'
+        ? unclaimedGateTokenIdsOwned
+            .filter((tokenId) => selectedGateTokenId === null || tokenId !== selectedGateTokenId)
+            .map((value) => value.toString())
+        : [];
+
     return res.status(200).json({
       ok: true,
       txHash,
@@ -964,11 +976,13 @@ export default async function handler(req, res) {
       claimsPerGateToken: String(claimsPerGateToken),
       maxClaimsAllowed: maxClaimsAllowed.toString(),
       walletClaimCountBefore: String(walletClaimCount),
+      walletClaimCountAfter: String(walletClaimCountAfter),
+      claimsRemainingAfter: claimsRemainingAfter.toString(),
       gateTokenClaimMode,
       claimedWithGateTokenId: selectedGateTokenId !== null ? selectedGateTokenId.toString() : null,
       unclaimedGateTokenIdsOwned:
         gateTokenClaimMode === 'erc721_token_id_once'
-          ? unclaimedGateTokenIdsOwned.map((value) => value.toString())
+          ? unclaimedGateTokenIdsAfter
           : [],
       from: treasuryAddress,
       to: address
